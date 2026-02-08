@@ -4,6 +4,10 @@ A high-performance, stealth-oriented PHP management interface designed for secur
 
 ## 🚀 Key Features
 
+### 📋 Requirements
+- **PHP 7.1.0 or higher**: Required for AES-256-GCM encryption support via OpenSSL.
+- **OpenSSL Extension**: Must be enabled in the PHP environment.
+
 ### 🛡️ Advanced Stealth & Anti-Analysis
 - **Dynamic 404 Facade**: Implements a perfect mimic of a standard Apache "404 Not Found" error. The actual management interface remains invisible to unauthorized users and automated crawlers.
 - **Secret Reveal Mechanism**: The login form is rendered with `opacity: 0` and is completely non-interactive until triggered by the secret hotkey combination: **`Ctrl + Shift + K`**.
