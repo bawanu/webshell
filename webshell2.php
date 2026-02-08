@@ -424,6 +424,7 @@ if ($action === 'download' && isset($_GET['file'])) {
 if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     header('Content-Type: application/json');
     $response = array('status' => 'error', 'message' => 'Invalid action');
+    $action = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : $action);
 
     switch ($action) {
         case 'get_sysinfo': $response = array('status' => 'success', 'data' => getSystemInfo()); break;
@@ -737,7 +738,11 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             }
             $php_script .= 'file_put_contents($file, "done\n", FILE_APPEND); @unlink($pid_file); @unlink(__FILE__); ?>';
             file_put_contents($script_file, $php_script);
-            pclose(popen((get_os_type() === 'WIN' ? 'start /B ' : 'nohup ') . "php -f {$script_file} > /dev/null 2>&1 &", 'r'));
+            if (get_os_type() === 'WIN') {
+                pclose(popen("start /B php -f \"{$script_file}\" > NUL 2>&1", 'r'));
+            } else {
+                pclose(popen("nohup php -f \"{$script_file}\" > /dev/null 2>&1 &", 'r'));
+            }
             $response = array('status' => 'success', 'scan_id' => $scan_id);
             break;
         case 'check_scan_progress':
@@ -989,7 +994,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof v === 'object' && v !== null && Object.keys(v).length > 0) {
                 valueHtml = `<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px;">${Object.entries(v).map(([cmd, status]) => `<div>${cmd}: <strong style="color: ${status === 'ON' ? 'var(--success-color)' : 'var(--danger-color)'};">${status}</strong></div>`).join('')}</div>`;
             } else {
-                valueHtml = String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                valueHtml = `<span style="color: var(--success-color); font-weight: 500;">${String(v).replace(/</g, "&lt;").replace(/>/g, "&gt;")}</span>`;
             }
             return `<div class="info-card"><strong>${k}:</strong><br>${valueHtml}</div>`;
         }).join('');
