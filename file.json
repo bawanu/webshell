@@ -1,0 +1,81 @@
+{
+  "categories": [
+    { "id": 1, "name": "Plumber" },
+    { "id": 2, "name": "Electrician" },
+    { "id": 3, "name": "Carpenter" },
+    { "id": 4, "name": "Painter" }
+  ],
+
+  "providers": [
+    {
+      "id": 101,
+      "name": "Kawa Plumbing",
+      "phone": "+9647501234567",
+      "categoryId": 1,
+      "bio": "Expert plumber with 10 years experience fixing homes and offices.",
+      "photoURL": "https://via.placeholder.com/150"
+    },
+    {
+      "id": 102,
+      "name": "Sherif Electric",
+      "phone": "+9647502345678",
+      "categoryId": 2,
+      "bio": "Certified electrician, specializes in home and industrial wiring.",
+      "photoURL": "https://via.placeholder.com/150"
+    },
+    {
+      "id": 103,
+      "name": "Baran Carpentry",
+      "phone": "+9647503456789",
+      "categoryId": 3,
+      "bio": "Custom furniture and woodwork, fast and reliable.",
+      "photoURL": "https://via.placeholder.com/150"
+    },
+    {
+      "id": 104,
+      "name": "Roj Painter",
+      "phone": "+9647504567890",
+      "categoryId": 4,
+      "bio": "Professional painter for interiors and exteriors, eco-friendly paints.",
+      "photoURL": "https://via.placeholder.com/150"
+    }
+  ],
+
+  "ratings": [
+    { "providerId": 101, "value": 5 },
+    { "providerId": 101, "value": 4 },
+    { "providerId": 102, "value": 5 },
+    { "providerId": 103, "value": 3 },
+    { "providerId": 104, "value": 4 },
+    { "providerId": 104, "value": 5 }
+  ],
+
+  "users": [
+    {
+      "id": 201,
+      "name": "Alan",
+      "email": "alan@example.com",
+      "type": "normal"
+    },
+    {
+      "id": 202,
+      "name": "Darya",
+      "email": "darya@example.com",
+      "type": "normal"
+    },
+    {
+      "id": 203,
+      "name": "Khalid",
+      "email": "khalid@example.com",
+      "type": "provider",
+      "providerId": 101
+    },
+    {
+      "id": 204,
+      "name": "Shler",
+      "email": "shler@example.com",
+      "type": "provider",
+      "providerId": 102
+    }
+  ]
+}
